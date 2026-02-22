@@ -11,11 +11,10 @@ use bracebalance::{
 };
 use rmcp::{
     ServerHandler, ServiceExt,
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    tool, tool_handler, tool_router,
+    handler::server::{tool::ToolRouter, wrapper::Parameters},
+    schemars, tool, tool_handler, tool_router,
     transport::stdio,
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -23,7 +22,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Parameters for checking raw text content.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CheckTextParams {
     /// The raw source text to check.
     pub text: String,
@@ -36,7 +35,7 @@ pub struct CheckTextParams {
 }
 
 /// Parameters for checking a single file or scanning a directory.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CheckPathParams {
     /// Absolute or relative path to a file or directory. Directories are
     /// scanned recursively for files with supported extensions.
@@ -48,7 +47,7 @@ pub struct CheckPathParams {
 }
 
 /// Parameters for checking multiple files or directories.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CheckPathsParams {
     /// One or more absolute or relative paths. Directories are scanned
     /// recursively. Duplicate paths are deduplicated automatically.
@@ -88,7 +87,7 @@ impl Default for BraceBalanceMcp {
 // Tools
 // ---------------------------------------------------------------------------
 
-#[tool_router(router = tool_router)]
+#[tool_router]
 impl BraceBalanceMcp {
     /// Check that paired characters are balanced in a string of source code.
     ///
@@ -165,7 +164,31 @@ impl BraceBalanceMcp {
 // ---------------------------------------------------------------------------
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for BraceBalanceMcp {}
+impl ServerHandler for BraceBalanceMcp {
+    fn get_info(&self) -> rmcp::model::InitializeResult {
+        rmcp::model::InitializeResult {
+            server_info: rmcp::model::Implementation {
+                name: "bracebalance".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                description: Some(
+                    "Check balanced brace/bracket pairs in source text, files, or directories."
+                        .to_string(),
+                ),
+                title: None,
+                icons: None,
+                website_url: None,
+            },
+            instructions: Some(
+                "Check balanced brace/bracket pairs in source text, files, or directories."
+                    .to_string(),
+            ),
+            capabilities: rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
+            ..Default::default()
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Shared check runner (DRY)
