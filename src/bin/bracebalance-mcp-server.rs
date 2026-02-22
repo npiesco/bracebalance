@@ -239,6 +239,20 @@ fn run_checks(files: &[PathBuf], pairs: &[(char, char)]) -> String {
 async fn main() -> anyhow::Result<()> {
     let server = BraceBalanceMcp::new();
     let transport = stdio();
-    server.serve(transport).await?;
+
+    // IMPORTANT: `.serve()` only starts the MCP service — it returns
+    // immediately.  You MUST call `.waiting().await` on the returned
+    // `RunningService` to keep the process alive and handling requests.
+    // Without it the server exits instantly and the MCP client sees
+    // "Connection state: Stopped".
+    //
+    // Correct (rmcp 0.16):
+    //   let service = server.serve(transport).await?;
+    //   service.waiting().await?;
+    //
+    // Wrong — exits immediately:
+    //   server.serve(transport).await?;
+    let service = server.serve(transport).await?;
+    service.waiting().await?;
     Ok(())
 }

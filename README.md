@@ -176,6 +176,58 @@ All three tools accept optional `pairs` (e.g. `["()", "{}"]`) and `all_pairs` (b
 }
 ```
 
+### VS Code config
+
+Add to `.vscode/mcp.json`:
+
+```jsonc
+{
+  "servers": {
+    "bracebalance": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/target/release/bracebalance-mcp-server.exe"
+    }
+  }
+}
+```
+
+### rmcp MRE — `.waiting()` is required
+
+If your rmcp 0.16 MCP server exits instantly ("Connection state: Stopped") the
+moment a client connects, you are almost certainly missing the `.waiting()` call.
+
+`.serve()` returns a `RunningService` future that **sets up** the connection — it
+does **not** block.  You must call `.waiting().await` on the returned service to
+keep the process alive and processing requests.
+
+```rust
+// ✅ Correct — server stays alive
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let server = MyMcpServer::new();
+    let transport = rmcp::transport::stdio();
+    let service = server.serve(transport).await?;
+    service.waiting().await?;          // <── keeps the process alive
+    Ok(())
+}
+```
+
+```rust
+// ❌ Wrong — exits immediately after handshake
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let server = MyMcpServer::new();
+    let transport = rmcp::transport::stdio();
+    server.serve(transport).await?;    // returns, process exits
+    Ok(())
+}
+```
+
+Also: **never** write to stdout (`println!`, `print!`, `dbg!`) in an MCP stdio
+server — it corrupts the JSON-RPC framing and the client will disconnect.  Use
+`eprintln!` (stderr) for diagnostics, or better yet use `tracing` with a stderr
+subscriber.
+
 ## Running Tests
 
 The `test_artifacts/` directory contains 21 deeply nested test files across 7 languages — 14 valid and 7 intentionally broken.

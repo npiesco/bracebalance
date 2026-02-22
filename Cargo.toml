@@ -3,6 +3,14 @@ name = "bracebalance"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "bracebalance"
+path = "src/main.rs"
+
+[[bin]]
+name = "bracebalance-mcp-server"
+path = "src/bin/bracebalance-mcp-server.rs"
+
 [dependencies]
 clap       = { version = "4.5.60", features = ["derive"] }
 rmcp       = { version = "0.16.0", features = ["server", "transport-io", "macros"] }
