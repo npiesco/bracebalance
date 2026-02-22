@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "bracebalance": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/target/release/mcp_server.exe"
+    }
+  }
+}
