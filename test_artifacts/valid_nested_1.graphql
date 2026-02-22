@@ -1,0 +1,136 @@
+# Deeply nested GraphQL SDL - BALANCED
+# Comment trap: { [ ( } ] )
+# Another trap: type Fake { broken: [String }
+
+"""
+Schema docstring trap:
+  type Trap { items: [String, { nested: [Int } }
+  # still in docstring { [ (
+"""
+
+"""Root query description"""
+type Query {
+    """Fetch a user by ID"""
+    user(id: ID!): User
+    """Search users"""
+    users(filter: UserFilter, pagination: Pagination): UserConnection
+}
+
+"""User type"""
+type User {
+    id: ID!
+    profile: Profile
+    posts(first: Int, after: String): PostConnection
+    settings: UserSettings
+}
+
+"""User profile"""
+type Profile {
+    name: String!
+    address: Address
+    metadata: [MetaEntry!]!
+}
+
+"""Address"""
+type Address {
+    street: String
+    city: String
+    coordinates: Coordinates
+}
+
+"""Geo coordinates"""
+type Coordinates {
+    lat: Float!
+    lng: Float!
+}
+
+"""Key-value metadata"""
+type MetaEntry {
+    key: String!
+    value: MetaValue
+}
+
+union MetaValue = StringValue | IntValue | BoolValue
+
+type StringValue { value: String! }
+type IntValue    { value: Int! }
+type BoolValue   { value: Boolean! }
+
+"""Paginated post connection"""
+type PostConnection {
+    edges: [PostEdge!]!
+    pageInfo: PageInfo!
+}
+
+type PostEdge {
+    node: Post!
+    cursor: String!
+}
+
+type Post {
+    id: ID!
+    title: String!
+    tags: [Tag!]!
+    stats: PostStats
+}
+
+type Tag { name: String! }
+
+type PostStats {
+    views: Int!
+    breakdown: [StatBreakdown!]!
+}
+
+type StatBreakdown {
+    period: String!
+    count: Int!
+}
+
+type PageInfo {
+    hasNextPage: Boolean!
+    endCursor: String
+}
+
+type UserConnection {
+    edges: [UserEdge!]!
+    pageInfo: PageInfo!
+}
+
+type UserEdge {
+    node: User!
+    cursor: String!
+}
+
+type UserSettings {
+    notifications: NotificationSettings
+    privacy: PrivacySettings
+}
+
+type NotificationSettings {
+    email: Boolean!
+    channels: [NotificationChannel!]!
+}
+
+type NotificationChannel {
+    type: String!
+    enabled: Boolean!
+}
+
+type PrivacySettings {
+    visibility: String!
+    blocklist: [ID!]!
+}
+
+input UserFilter {
+    name: String
+    tags: [String!]
+}
+
+input Pagination {
+    first: Int
+    after: String
+}
+
+type UserSettings {
+    theme: String
+}

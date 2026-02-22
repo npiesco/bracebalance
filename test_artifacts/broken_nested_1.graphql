@@ -1,0 +1,67 @@
+# Deeply nested GraphQL SDL - HAS ISSUES (missing closers)
+# Comment trap: { [ ( } ] )
+# Trap: type Fake { items: [String }
+
+"""
+Docstring trap: { [ ( } ] )
+type InDocstring { broken: [ID }
+"""
+
+type Query {
+    user(id: ID!): User
+    users(filter: UserFilter): [User!]!
+}
+
+type User {
+    id: ID!
+    profile: Profile
+    posts: [Post!]!
+
+type Profile {       # <-- missing } to close User
+    name: String!
+    address: Address
+    scores: [Int!]!
+}
+
+type Address {
+    street: String
+    nested: NestedAddr
+}
+
+type NestedAddr {
+    parts: [AddrPart!]!
+    coords: Coordinates
+}
+
+type Coordinates {
+    lat: Float!
+    lng: Float!
+    # missing }   <-- never closed
+
+type AddrPart {
+    value: String!
+}
+
+type Post {
+    id: ID!
+    tags: [Tag!]!
+    stats: PostStats
+}
+
+type Tag { name: String! }
+
+type PostStats {
+    views: Int!
+    breakdown: [StatBreakdown!]
+
+# missing } close PostStats
+
+type StatBreakdown {
+    period: String!
+    count: Int!
+}
+
+input UserFilter {
+    name: String
+    tags: [String!]
+}
