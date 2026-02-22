@@ -1,8 +1,12 @@
+pub mod sanitize;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 
 use serde::{Deserialize, Serialize};
+
+pub use sanitize::{sanitize, syntax_for_extension, syntax_for_path};
 
 // ---------------------------------------------------------------------------
 // Pair constants
@@ -170,8 +174,33 @@ pub struct BalanceResult {
 }
 
 /// Pure algorithm — no I/O. Takes text content and pair tuples, returns structured result.
+///
+/// When `ext` is `Some("rs")` etc., string literals and comments are
+/// stripped before checking so that braces inside them don't cause
+/// false positives.
 pub fn check_balance_str(content: &str, pairs: &[(char, char)]) -> BalanceResult {
+    check_balance_str_ext(content, pairs, None)
+}
+
+/// Like [`check_balance_str`] but accepts an optional file extension to
+/// enable language-aware sanitization of strings and comments.
+pub fn check_balance_str_ext(
+    content: &str,
+    pairs: &[(char, char)],
+    ext: Option<&str>,
+) -> BalanceResult {
     use std::collections::HashMap;
+
+    // Sanitize: strip string literals and comments so only structural
+    // paired characters are checked.
+    let sanitized: String;
+    let effective = if let Some(ext) = ext {
+        let syntax = syntax_for_extension(ext);
+        sanitized = sanitize(content, syntax);
+        &sanitized
+    } else {
+        content
+    };
 
     let pair_labels = pairs
         .iter()
@@ -191,9 +220,18 @@ pub fn check_balance_str(content: &str, pairs: &[(char, char)]) -> BalanceResult
     let mut open_stack: Vec<StackEntry> = Vec::new();
     let mut mismatches: Vec<BalanceMismatch> = Vec::new();
 
-    for (line_idx, line) in content.lines().enumerate() {
+    // Iterate over sanitized text for brace logic, but use original
+    // content for line_text in error messages.
+    let original_lines: Vec<&str> = content.lines().collect();
+
+    for (line_idx, line) in effective.lines().enumerate() {
         let line_num = line_idx + 1;
-        let line_text = line.trim_end().to_string();
+        // Use original line text for display, sanitized for checking
+        let line_text = original_lines
+            .get(line_idx)
+            .unwrap_or(&"")
+            .trim_end()
+            .to_string();
 
         for ch in line.chars() {
             if open_chars.contains_key(&ch) {
@@ -346,7 +384,11 @@ pub fn check_balance_file(
 ) -> Result<BalanceResult, String> {
     let content = fs::read_to_string(filepath)
         .map_err(|e| format!("Could not read {}: {e}", filepath.display()))?;
-    Ok(check_balance_str(&content, pairs))
+    let ext = filepath
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    Ok(check_balance_str_ext(&content, pairs, ext.as_deref()))
 }
 
 /// Convenience: check file, print result, return `is_balanced`.

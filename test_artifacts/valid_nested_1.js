@@ -1,4 +1,11 @@
 // Deeply nested JavaScript - BALANCED
+// Comment traps: { [ ( } ] )
+/* Block comment: { unmatched [ ( */
+const strTrap1 = "braces in string { [ ( } ] )";
+const strTrap2 = 'single quoted { [ (';
+const strTrap3 = `template literal with { } [ ] ( )`;
+const strTrap4 = "escaped quote \" still in string { [";
+const strTrap5 = `escaped backtick \` still { in template`;
 
 const deepConfig = {
     database: {

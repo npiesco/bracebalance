@@ -1,5 +1,17 @@
 """Deeply nested Python - BALANCED"""
 
+# Comment with braces: { [ ( } ] )
+trap1 = "String with { unmatched [ brace"
+trap2 = 'Single-quoted { [ ( traps'
+trap3 = """Triple-double with { [ (
+  multi-line unmatched braces } ] )
+"""
+trap4 = '''Triple-single with { [ (
+  more unmatched
+'''
+trap5 = r"Raw string { [ ( no escapes"
+trap6 = r'Raw single { } [ ]'
+
 def outer():
     data = {
         "users": [

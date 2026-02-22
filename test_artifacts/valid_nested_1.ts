@@ -1,4 +1,11 @@
 // Deeply nested TypeScript - BALANCED
+// Comment with braces: { [ ( } ] )
+/* Block comment with { unmatched [ braces ( */
+const trap1 = "String with { unmatched [ brace";
+const trap2 = 'Single-quoted { [ ( traps';
+const trap3 = `Template literal with { unmatched } [ ] braces`;
+const trap4 = "Escaped quote \" with { brace inside";
+const trap5 = `Backtick with \` escaped and { brace`;
 
 interface DeepConfig {
     database: {

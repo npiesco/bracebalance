@@ -1,4 +1,8 @@
 // Deeply nested JavaScript - BALANCED
+// Comment traps: { [ ( } ] )
+/* Block { [ ( */
+const jsTrap = "{ string [ brace ( trap";
+const jsTrap2 = `template { literal [ trap`;
 
 class EventSystem {
     constructor() {

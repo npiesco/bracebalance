@@ -1,5 +1,11 @@
 """Deeply nested Python - BALANCED"""
 
+# Comment with braces: { [ ( } ] )
+trap1 = "String with { unmatched brace"
+trap2 = '''Triple-single
+with { braces [ ( inside
+'''
+
 CONFIG = {
     "database": {
         "connections": [

@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use bracebalance::{
-    check_balance_file, check_balance_str, collect_files, format_report, format_summary,
+    check_balance_file, check_balance_str_ext, collect_files, format_report, format_summary,
     resolve_pairs,
 };
 use rmcp::{
@@ -28,6 +28,10 @@ pub struct CheckTextParams {
     pub text: String,
     /// Optional display label (e.g. a filename) used in the report.
     pub label: Option<String>,
+    /// File extension hint (e.g. "rs", "py", "ts") for language-aware
+    /// sanitization of string literals and comments.  When omitted, no
+    /// sanitization is performed.
+    pub ext: Option<String>,
     /// Custom pairs to check, e.g. ["()", "{}"] — default: () {} []
     pub pairs: Option<Vec<String>>,
     /// When true, check all built-in pairs: () {} [] <>
@@ -108,7 +112,7 @@ impl BraceBalanceMcp {
         };
 
         let label = p.label.as_deref().unwrap_or("<inline text>");
-        let result = check_balance_str(&p.text, &pairs);
+        let result = check_balance_str_ext(&p.text, &pairs, p.ext.as_deref());
         format_report(label, &result)
     }
 

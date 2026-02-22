@@ -1,8 +1,15 @@
 // Deeply nested Rust - BALANCED
+// This file tests that braces inside strings and comments are ignored.
 
 use std::collections::HashMap;
 
 fn main() {
+    // These braces in a comment should be ignored: { [ ( } ] )
+    /* Block comment with braces: { unmatched [ ( */
+    let trap1 = "String with braces { [ ( that don't match } ] )";
+    let trap2 = "Escaped quote \" with { unmatched brace";
+    let trap3 = r#"Raw string with { [ ( unmatched braces"#;
+    let trap4 = r##"Double-hash raw: { } [ ] ( )"##;
     let data: HashMap<&str, Vec<(i32, Vec<HashMap<&str, Vec<(i32, i32)>>>)>> = {
         let mut outer = HashMap::new();
         outer.insert("root", vec![

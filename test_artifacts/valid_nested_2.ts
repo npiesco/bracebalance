@@ -1,4 +1,8 @@
 // Deeply nested TypeScript - BALANCED
+// Comment traps: { [ ( } ] )
+/* Block { [ ( */
+const trap = "{ string [ brace ( trap";
+const trap2 = `template { literal [ trap`;
 
 type RecursiveTree<T> = {
     value: T;

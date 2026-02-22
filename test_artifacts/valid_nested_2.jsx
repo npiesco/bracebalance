@@ -1,4 +1,8 @@
 // Deeply nested JSX - BALANCED
+// Comment traps: { [ ( } ] )
+/* Block { [ ( */
+const jsxTrap = "{ string [ brace ( trap";
+const jsxTrap2 = `template { literal [ trap`;
 
 import React, { useReducer, useCallback } from "react";
 

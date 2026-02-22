@@ -1,4 +1,9 @@
 // Deeply nested JSX - BALANCED
+// Comment with braces: { [ ( } ] )
+/* Block comment { unmatched [ braces ( */
+const jsxTrap1 = "String with { unmatched [ brace";
+const jsxTrap2 = 'Single-quoted { [ ( traps';
+const jsxTrap3 = `Template with { unmatched braces }`;
 
 import React, { useState, useMemo } from "react";
 

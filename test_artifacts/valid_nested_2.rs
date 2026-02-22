@@ -1,4 +1,8 @@
 // Deeply nested Rust - BALANCED
+// Brace traps: { [ ( } ] )
+/* Block comment { unmatched [ ( */
+const TRAP: &str = "{ unmatched [ brace in string";
+const RAW_TRAP: &str = r#"{ raw [ string ( trap"#;
 
 enum DeepEnum {
     Variant1(Vec<(i32, Box<DeepEnum>)>),
