@@ -1,0 +1,55 @@
+{
+    "description": "Deeply nested JSON — HAS ISSUES (string traps hide real errors)",
+    "string_trap_1": "{ [ ( } ] ) — must be ignored by sanitizer",
+    "string_trap_2": "escaped: \" still inside { [ (",
+    "string_trap_3": "code-like: function() { return [1, (2, 3)]; }",
+    "database": {
+        "connections": [
+            {
+                "primary": {
+                    "host": "localhost",
+                    "trap_string": "{ unmatched [ ( in string }",
+                    "options": {
+                        "pool": {
+                            "min": [2, 4],
+                            "max": [10, 20],
+                            "settings": [
+                                {
+                                    "timeout": [30, [60, 90]],
+                                    "trap": "{ { { [ [ [ ( ( ( ) ) ) ] ] ] } } }",
+                                    "retry": {
+                                        "attempts": [1, 2, 3],
+                                        "backoff": {
+                                            "params": {
+                                                "base": [100, 200],
+                                                "jitter": {
+                                                    "range": [0.1, 0.5,
+                                                    "distribution": "uniform"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                },
+                "replicas": [
+                    {
+                        "host": "replica1",
+                        "trap": "{ a: [1, (2, 3)], b: {c: [{d: 4}]} }",
+                        "weights": {
+                            "read": [1, 2, 3],
+                            "computed": {
+                                "scores": [
+                                    [10, [20, [30, [40, 50]]]],
+                                    [60, [70, [80]]
+                                ]
+                            }
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+}

@@ -1,24 +1,23 @@
-//! Source-aware sanitizer using `nom`.
+//! Source-aware sanitizer built on **nom 8** combinators.
 //!
-//! Strips string literals and comments from source code so that the
-//! brace-balance checker only sees *structural* paired characters and
-//! never false-positives on braces inside strings or comments.
+//! Strips string literals and comments so the brace-balance checker only sees
+//! structural paired characters.  The sanitizer is a single-pass, left-to-right,
+//! deterministic parser.  Every byte inside a recognised string or comment is
+//! replaced with a space (`b' '`), except newlines which are preserved so that
+//! line numbers stay correct.  The output has the same byte-length as the input.
 //!
-//! The sanitizer is **deterministic** — it is a single-pass left-to-right
-//! parser that replaces every non-structural character inside a string or
-//! comment with a space (preserving line count and column offsets).
+//! ## Language support
 //!
-//! ## Design
-//!
-//! We do NOT try to be a full lexer for every language.  Instead we
-//! configure a set of *comment styles* and *string styles* per language
-//! (keyed on file extension) and combine them into a single nom parser.
-//!
-//! The parser emits a new `String` of the same length where every character
-//! inside a string literal or comment is replaced with a space, **except**
-//! for newlines which are kept so line numbers stay correct.
+//! A [`LangSyntax`] table selects which comment and string styles apply.
+//! [`syntax_for_extension`] maps file extensions to the right table for every
+//! language listed in `SUPPORTED_EXTENSIONS`.
 
 use std::path::Path;
+
+use nom::{
+    IResult, Parser,
+    bytes::{tag, take_while, take_until},
+};
 
 // ---------------------------------------------------------------------------
 // Per-language syntax configuration
@@ -41,10 +40,8 @@ pub enum CommentStyle {
     OcamlBlock,
     /// `<!-- ... -->`
     HtmlBlock,
-    /// `; ...` to end of line  (Lisp/Clojure)
+    /// `; ...` to end of line  (Lisp / Clojure)
     Semicolon,
-    /// `" ...` to end of line  (Vimscript)
-    VimComment,
     /// `% ...` to end of line  (Erlang)
     Percent,
 }
@@ -56,21 +53,21 @@ pub enum StringStyle {
     Double,
     /// `'...'` with `\'` escape
     Single,
-    /// `` `...` `` with `` \` `` escape (JS/TS template literals)
+    /// `` `...` `` with `` \` `` escape  (JS / TS template literals)
     Backtick,
-    /// `"""..."""` Python triple-double
+    /// `"""..."""`  Python triple-double
     TripleDouble,
-    /// `'''...'''` Python triple-single
+    /// `'''...'''`  Python triple-single
     TripleSingle,
-    /// `r"..."` Python raw string (double)
+    /// `r"..."`  Python raw string (double)
     PythonRawDouble,
-    /// `r'...'` Python raw string (single)
+    /// `r'...'`  Python raw string (single)
     PythonRawSingle,
-    /// `r#"..."#` Rust raw string (we handle r, r#, r##, etc.)
+    /// `r#"..."#`  Rust raw string (variable hash count)
     RustRaw,
 }
 
-/// The combined syntax config for a language.
+/// Combined syntax config for one language family.
 #[derive(Debug, Clone)]
 pub struct LangSyntax {
     pub comments: &'static [CommentStyle],
@@ -144,11 +141,6 @@ static ERLANG: LangSyntax = LangSyntax {
     strings: &[Double],
 };
 
-static VIM: LangSyntax = LangSyntax {
-    comments: &[VimComment],
-    strings: &[Double, Single],
-};
-
 static ELM: LangSyntax = LangSyntax {
     comments: &[DoubleDash, HaskellBlock],
     strings: &[Double],
@@ -169,149 +161,98 @@ static LUA: LangSyntax = LangSyntax {
     strings: &[Double, Single],
 };
 
-/// JSON has no comments but has strings that could contain braces.
 static JSON_STYLE: LangSyntax = LangSyntax {
     comments: &[],
     strings: &[Double],
 };
 
-/// JSONC has C-line comments + strings.
 static JSONC_STYLE: LangSyntax = LangSyntax {
     comments: &[CLineComment, CBlockComment],
     strings: &[Double],
 };
 
-/// TOML: `#` comments, basic strings `"`, literal strings `'`
 static TOML_STYLE: LangSyntax = LangSyntax {
     comments: &[Hash],
     strings: &[Double, Single],
 };
 
-/// YAML: `#` comments, both quote styles
 static YAML_STYLE: LangSyntax = LangSyntax {
     comments: &[Hash],
     strings: &[Double, Single],
 };
 
-/// Groovy: C-style comments + triple-double strings + single + double
 static GROOVY: LangSyntax = LangSyntax {
     comments: &[CLineComment, CBlockComment],
     strings: &[TripleDouble, Double, Single],
 };
 
-/// Scala: C-style comments + triple-double strings + single + double
 static SCALA: LangSyntax = LangSyntax {
     comments: &[CLineComment, CBlockComment],
     strings: &[TripleDouble, Double, Single],
 };
 
-/// Kotlin: C-style comments + backtick (for identifiers) + double + single (char)
 static KOTLIN: LangSyntax = LangSyntax {
     comments: &[CLineComment, CBlockComment],
     strings: &[TripleDouble, Double, Single],
 };
 
-/// PowerShell: `#` line comment, `<# ... #>` block comment — we approximate
-/// block `<# #>` via a dedicated handler below, but for now we use Hash.
 static POWERSHELL: LangSyntax = LangSyntax {
     comments: &[Hash],
     strings: &[Double, Single],
 };
 
-/// Emacs Lisp: `;` comments
 static EMACS_LISP: LangSyntax = LangSyntax {
     comments: &[Semicolon],
     strings: &[Double],
 };
 
-/// No-op fallback — no stripping at all.
+static VIM: LangSyntax = LangSyntax {
+    comments: &[],
+    strings: &[Double, Single],
+};
+
 static PLAIN: LangSyntax = LangSyntax {
     comments: &[],
     strings: &[],
 };
 
-/// Look up the syntax configuration for a file based on its extension.
+/// Map a file extension to its syntax configuration.
 pub fn syntax_for_extension(ext: &str) -> &'static LangSyntax {
     match ext {
-        // C-style with backtick template literals
         "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "vue" | "svelte" => &C_STYLE_BACKTICK,
-
-        // C-style (no backtick)
         "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "hxx"
         | "java" | "go" | "swift" | "dart" | "cs"
         | "proto" | "tf" | "hcl" => &C_STYLE,
-
-        // JVM variants with triple-quoted strings
         "kt" | "kts" => &KOTLIN,
         "scala" => &SCALA,
         "groovy" => &GROOVY,
-
-        // Rust
         "rs" => &RUST,
-
-        // Python
         "py" => &PYTHON,
-
-        // Ruby / Shell / R / Perl / CMake
-        "rb" | "sh" | "bash" | "zsh" | "fish" | "r" | "pl" | "pm" | "cmake" | "dockerfile" => &HASH_ONLY,
-
-        // PHP (has //, /* */, and #)
+        "rb" | "sh" | "bash" | "zsh" | "fish" | "r" | "pl" | "pm"
+        | "cmake" | "dockerfile" => &HASH_ONLY,
         "php" => &PHP,
-
-        // Lua
         "lua" => &LUA,
-
-        // Elixir
         "ex" | "exs" => &ELIXIR,
-
-        // Erlang
         "erl" | "hrl" => &ERLANG,
-
-        // Haskell
         "hs" => &HASKELL,
-
-        // Elm
         "elm" => &ELM,
-
-        // OCaml
         "ml" | "mli" => &OCAML,
-
-        // F#
         "fs" | "fsi" | "fsx" => &FSHARP,
-
-        // Clojure (Lisp)
         "clj" | "cljs" | "cljc" => &LISP,
-
-        // SQL / GraphQL
         "sql" | "graphql" | "gql" => &SQL_STYLE,
-
-        // HTML / XML
         "html" | "htm" | "xml" => &HTML,
-
-        // JSON
         "json" => &JSON_STYLE,
         "jsonc" => &JSONC_STYLE,
-
-        // TOML
         "toml" => &TOML_STYLE,
-
-        // YAML
         "yml" | "yaml" => &YAML_STYLE,
-
-        // Vim
         "vim" => &VIM,
-
-        // Emacs Lisp
         "el" => &EMACS_LISP,
-
-        // PowerShell
         "ps1" | "psm1" => &POWERSHELL,
-
         _ => &PLAIN,
     }
 }
 
-/// Convenience: get syntax from a file path.
+/// Get syntax from a file path's extension.
 pub fn syntax_for_path(path: &Path) -> &'static LangSyntax {
     let ext = path
         .extension()
@@ -321,700 +262,613 @@ pub fn syntax_for_path(path: &Path) -> &'static LangSyntax {
     syntax_for_extension(&ext)
 }
 
+// ===========================================================================
+// nom 8 parsers
+//
+// In nom 8, combinators like `tag`, `take_while`, `take_until` return
+// `impl Parser` values.  You call `.parse_complete(input)` on them to obtain
+// `IResult`.  Every delimiter match and whitespace skip below uses nom
+// combinators; escape-aware body scanning is a small state machine that
+// feeds results back through `IResult`.
+// ===========================================================================
+
+type Err<'a> = nom::error::Error<&'a [u8]>;
+
+fn err(input: &[u8]) -> nom::Err<Err<'_>> {
+    nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag))
+}
+
 // ---------------------------------------------------------------------------
-// The sanitizer — replaces string/comment interior with spaces
+// Comment parsers
 // ---------------------------------------------------------------------------
 
-/// Sanitize source code: replace the interior of all string literals and
-/// comments with spaces (preserving newlines).  The returned string has the
-/// same length and line structure as the input.
-///
-/// `syntax` determines which comment and string styles are recognised.
-pub fn sanitize(input: &str, syntax: &LangSyntax) -> String {
-    let bytes = input.as_bytes();
-    let len = bytes.len();
-    let mut out = Vec::with_capacity(len);
+/// `// ...` through end-of-line (newline NOT consumed).
+fn parse_c_line_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"//" as &[u8]).parse_complete(input)?;
+    let (rest, _) = take_while::<_, _, Err<'_>>(|b: u8| b != b'\n').parse_complete(rest)?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `/* ... */` (may span multiple lines).
+fn parse_c_block_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"/*" as &[u8]).parse_complete(input)?;
+    match take_until::<_, _, Err<'_>>(b"*/" as &[u8]).parse_complete(rest) {
+        Ok((after, _)) => {
+            let (after, _) = tag::<_, _, Err<'_>>(b"*/" as &[u8]).parse_complete(after)?;
+            let len = input.len() - after.len();
+            Ok((after, &input[..len]))
+        }
+        Err(_) => Ok((&input[input.len()..], input)),
+    }
+}
+
+/// `# ...` through end-of-line.
+fn parse_hash_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"#" as &[u8]).parse_complete(input)?;
+    let (rest, _) = take_while::<_, _, Err<'_>>(|b: u8| b != b'\n').parse_complete(rest)?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `-- ...` through end-of-line.
+fn parse_double_dash_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"--" as &[u8]).parse_complete(input)?;
+    let (rest, _) = take_while::<_, _, Err<'_>>(|b: u8| b != b'\n').parse_complete(rest)?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `{- ... -}`
+fn parse_haskell_block_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"{-" as &[u8]).parse_complete(input)?;
+    match take_until::<_, _, Err<'_>>(b"-}" as &[u8]).parse_complete(rest) {
+        Ok((after, _)) => {
+            let (after, _) = tag::<_, _, Err<'_>>(b"-}" as &[u8]).parse_complete(after)?;
+            let len = input.len() - after.len();
+            Ok((after, &input[..len]))
+        }
+        Err(_) => Ok((&input[input.len()..], input)),
+    }
+}
+
+/// `(* ... *)`
+fn parse_ocaml_block_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"(*" as &[u8]).parse_complete(input)?;
+    match take_until::<_, _, Err<'_>>(b"*)" as &[u8]).parse_complete(rest) {
+        Ok((after, _)) => {
+            let (after, _) = tag::<_, _, Err<'_>>(b"*)" as &[u8]).parse_complete(after)?;
+            let len = input.len() - after.len();
+            Ok((after, &input[..len]))
+        }
+        Err(_) => Ok((&input[input.len()..], input)),
+    }
+}
+
+/// `<!-- ... -->`
+fn parse_html_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"<!--" as &[u8]).parse_complete(input)?;
+    match take_until::<_, _, Err<'_>>(b"-->" as &[u8]).parse_complete(rest) {
+        Ok((after, _)) => {
+            let (after, _) = tag::<_, _, Err<'_>>(b"-->" as &[u8]).parse_complete(after)?;
+            let len = input.len() - after.len();
+            Ok((after, &input[..len]))
+        }
+        Err(_) => Ok((&input[input.len()..], input)),
+    }
+}
+
+/// `; ...` to end-of-line (Lisp).
+fn parse_semicolon_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b";" as &[u8]).parse_complete(input)?;
+    let (rest, _) = take_while::<_, _, Err<'_>>(|b: u8| b != b'\n').parse_complete(rest)?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `% ...` to end-of-line (Erlang).
+fn parse_percent_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"%" as &[u8]).parse_complete(input)?;
+    let (rest, _) = take_while::<_, _, Err<'_>>(|b: u8| b != b'\n').parse_complete(rest)?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+// ---------------------------------------------------------------------------
+// String literal parsers
+// ---------------------------------------------------------------------------
+
+/// Consume a string body after the opening quote, handling `\x` escapes.
+/// On success returns `(remaining, body_including_close_quote)`.
+fn parse_escaped_body<'a>(input: &'a [u8], quote: u8) -> IResult<&'a [u8], &'a [u8]> {
     let mut i = 0;
-
-    while i < len {
-        // --- Try each comment style (longest-match first is guaranteed by
-        //     the order we try them — multi-char delimiters before single). ---
-
-        if let Some(advance) = try_comment(bytes, i, syntax) {
-            // Replace the entire comment span with spaces, keeping newlines.
-            blank_preserving_newlines(&bytes[i..i + advance], &mut out);
-            i += advance;
-            continue;
+    while i < input.len() {
+        if input[i] == b'\\' && i + 1 < input.len() {
+            i += 2; // skip escape pair
+        } else if input[i] == quote {
+            return Ok((&input[i + 1..], &input[..i + 1]));
+        } else {
+            i += 1;
         }
+    }
+    Ok((&input[input.len()..], input))
+}
 
-        // --- Try each string style ---
-
-        if let Some(advance) = try_string(bytes, i, syntax) {
-            blank_preserving_newlines(&bytes[i..i + advance], &mut out);
-            i += advance;
-            continue;
+/// Consume a raw string body (no escape processing) until `quote`.
+fn parse_raw_body<'a>(input: &'a [u8], quote: u8) -> IResult<&'a [u8], &'a [u8]> {
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == quote {
+            return Ok((&input[i + 1..], &input[..i + 1]));
         }
-
-        // --- Regular character: keep as-is ---
-        out.push(bytes[i]);
         i += 1;
     }
+    Ok((&input[input.len()..], input))
+}
 
-    // SAFETY: we only replaced ASCII non-newline bytes with spaces and kept
-    // multi-byte sequences that are not inside strings/comments verbatim.
-    // However there's a subtlety: inside strings/comments we blank ALL bytes
-    // including interior multi-byte chars.  Since we only replace with b' '
-    // (ASCII space) and keep b'\n', the result is always valid UTF-8 as long
-    // as the input was valid UTF-8.  If a multi-byte char straddles a
-    // boundary that shouldn't happen because our parsers always consume full
-    // delimiter sequences.
+/// Consume a triple-quoted body until the three-byte closing delimiter.
+fn parse_triple_body<'a>(input: &'a [u8], delim: &[u8]) -> IResult<&'a [u8], &'a [u8]> {
+    let dlen = delim.len();
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'\\' && i + 1 < input.len() {
+            i += 2;
+        } else if i + dlen <= input.len() && &input[i..i + dlen] == delim {
+            let end = i + dlen;
+            return Ok((&input[end..], &input[..end]));
+        } else {
+            i += 1;
+        }
+    }
+    Ok((&input[input.len()..], input))
+}
+
+/// `"..."` with `\"` escape.
+fn parse_double_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"\"" as &[u8]).parse_complete(input)?;
+    let (rest, _) = parse_escaped_body(rest, b'"')?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `'...'` with `\'` escape.
+fn parse_single_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"'" as &[u8]).parse_complete(input)?;
+    let (rest, _) = parse_escaped_body(rest, b'\'')?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `` `...` `` with `` \` `` escape.
+fn parse_backtick_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"`" as &[u8]).parse_complete(input)?;
+    let (rest, _) = parse_escaped_body(rest, b'`')?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `"""..."""`
+fn parse_triple_double(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"\"\"\"" as &[u8]).parse_complete(input)?;
+    let (rest, _) = parse_triple_body(rest, b"\"\"\"")?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `'''...'''`
+fn parse_triple_single(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"'''" as &[u8]).parse_complete(input)?;
+    let (rest, _) = parse_triple_body(rest, b"'''")?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `r"..."` / `R"..."` — Python raw double-quoted.
+fn parse_python_raw_double(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    if input.is_empty() || (input[0] != b'r' && input[0] != b'R') {
+        return Err(err(input));
+    }
+    let (after_r, _) = tag::<_, _, Err<'_>>(b"\"" as &[u8]).parse_complete(&input[1..])?;
+    let (rest, _) = parse_raw_body(after_r, b'"')?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `r'...'` / `R'...'` — Python raw single-quoted.
+fn parse_python_raw_single(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    if input.is_empty() || (input[0] != b'r' && input[0] != b'R') {
+        return Err(err(input));
+    }
+    let (after_r, _) = tag::<_, _, Err<'_>>(b"'" as &[u8]).parse_complete(&input[1..])?;
+    let (rest, _) = parse_raw_body(after_r, b'\'')?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `r"..."`, `r#"..."#`, `r##"..."##`, etc. — Rust raw string.
+fn parse_rust_raw_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (after_r, _) = tag::<_, _, Err<'_>>(b"r" as &[u8]).parse_complete(input)?;
+    // Count `#`s using take_while
+    let (after_hashes, hashes_slice) =
+        take_while::<_, _, Err<'_>>(|b: u8| b == b'#').parse_complete(after_r)?;
+    let num_hashes = hashes_slice.len();
+    // Must open with `"`
+    let (body_start, _) = tag::<_, _, Err<'_>>(b"\"" as &[u8]).parse_complete(after_hashes)?;
+
+    // Build closing delimiter: `"` + num_hashes × `#`
+    let mut close = Vec::with_capacity(1 + num_hashes);
+    close.push(b'"');
+    close.extend(std::iter::repeat(b'#').take(num_hashes));
+
+    // Scan for closing delimiter
+    let mut pos = 0;
+    while pos + close.len() <= body_start.len() {
+        if &body_start[pos..pos + close.len()] == close.as_slice() {
+            let end_in_body = pos + close.len();
+            let total = input.len() - (body_start.len() - end_in_body);
+            return Ok((&input[total..], &input[..total]));
+        }
+        pos += 1;
+    }
+    // unterminated
+    Ok((&input[input.len()..], input))
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch helpers
+// ---------------------------------------------------------------------------
+
+fn try_parse_comment<'a>(input: &'a [u8], style: CommentStyle) -> IResult<&'a [u8], &'a [u8]> {
+    match style {
+        CLineComment  => parse_c_line_comment(input),
+        CBlockComment => parse_c_block_comment(input),
+        Hash          => parse_hash_comment(input),
+        DoubleDash    => parse_double_dash_comment(input),
+        HaskellBlock  => parse_haskell_block_comment(input),
+        OcamlBlock    => parse_ocaml_block_comment(input),
+        HtmlBlock     => parse_html_comment(input),
+        Semicolon     => parse_semicolon_comment(input),
+        Percent       => parse_percent_comment(input),
+    }
+}
+
+fn try_parse_string<'a>(input: &'a [u8], style: StringStyle) -> IResult<&'a [u8], &'a [u8]> {
+    match style {
+        Double          => parse_double_string(input),
+        Single          => parse_single_string(input),
+        Backtick        => parse_backtick_string(input),
+        TripleDouble    => parse_triple_double(input),
+        TripleSingle    => parse_triple_single(input),
+        PythonRawDouble => parse_python_raw_double(input),
+        PythonRawSingle => parse_python_raw_single(input),
+        RustRaw         => parse_rust_raw_string(input),
+    }
+}
+
+// ===========================================================================
+// Top-level sanitizer
+// ===========================================================================
+
+/// Replace every byte inside recognised string literals and comments with
+/// spaces, preserving newlines.  The output has the same byte-length and
+/// line structure as the input.
+pub fn sanitize(input: &str, syntax: &LangSyntax) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut pos = 0usize;
+
+    while pos < bytes.len() {
+        let remaining = &bytes[pos..];
+
+        // 1. Try each comment style.
+        let mut matched = false;
+        for &style in syntax.comments {
+            if let Ok((_, span)) = try_parse_comment(remaining, style) {
+                blank_preserving_newlines(span, &mut out);
+                pos += span.len();
+                matched = true;
+                break;
+            }
+        }
+        if matched {
+            continue;
+        }
+
+        // 2. Try each string style.
+        for &style in syntax.strings {
+            if let Ok((_, span)) = try_parse_string(remaining, style) {
+                blank_preserving_newlines(span, &mut out);
+                pos += span.len();
+                matched = true;
+                break;
+            }
+        }
+        if matched {
+            continue;
+        }
+
+        // 3. Pass through regular byte.
+        out.push(bytes[pos]);
+        pos += 1;
+    }
+
     String::from_utf8(out).expect("sanitize produced invalid UTF-8")
 }
 
-// ---------------------------------------------------------------------------
-// Comment matchers
-// ---------------------------------------------------------------------------
-
-/// Try to match a comment starting at position `i`.
-/// Returns `Some(byte_count_consumed)` or `None`.
-fn try_comment(bytes: &[u8], i: usize, syntax: &LangSyntax) -> Option<usize> {
-    for style in syntax.comments {
-        if let Some(n) = match_comment(bytes, i, *style) {
-            return Some(n);
-        }
-    }
-    None
-}
-
-fn match_comment(bytes: &[u8], i: usize, style: CommentStyle) -> Option<usize> {
-    let remaining = bytes.len() - i;
-    match style {
-        CLineComment => {
-            if remaining >= 2 && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-                Some(consume_to_eol(bytes, i))
-            } else {
-                None
-            }
-        }
-        CBlockComment => {
-            if remaining >= 2 && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                Some(consume_block(bytes, i + 2, b"*/") + 2)
-            } else {
-                None
-            }
-        }
-        Hash => {
-            if bytes[i] == b'#' {
-                Some(consume_to_eol(bytes, i))
-            } else {
-                None
-            }
-        }
-        DoubleDash => {
-            if remaining >= 2 && bytes[i] == b'-' && bytes[i + 1] == b'-' {
-                Some(consume_to_eol(bytes, i))
-            } else {
-                None
-            }
-        }
-        HaskellBlock => {
-            if remaining >= 2 && bytes[i] == b'{' && bytes[i + 1] == b'-' {
-                Some(consume_block(bytes, i + 2, b"-}") + 2)
-            } else {
-                None
-            }
-        }
-        OcamlBlock => {
-            if remaining >= 2 && bytes[i] == b'(' && bytes[i + 1] == b'*' {
-                Some(consume_block(bytes, i + 2, b"*)") + 2)
-            } else {
-                None
-            }
-        }
-        HtmlBlock => {
-            if remaining >= 4 && &bytes[i..i + 4] == b"<!--" {
-                Some(consume_block(bytes, i + 4, b"-->") + 4)
-            } else {
-                None
-            }
-        }
-        Semicolon => {
-            if bytes[i] == b';' {
-                Some(consume_to_eol(bytes, i))
-            } else {
-                None
-            }
-        }
-        VimComment => {
-            // In Vimscript `"` at the start-ish of a statement is a comment.
-            // This is inherently ambiguous with string literals so we ONLY
-            // treat `"` as a comment when it appears as the first non-blank
-            // character on a line.  The caller should use this with the Vim
-            // syntax profile which has Double strings — the string matcher
-            // is tried first in the main loop, so mid-line `"` will be
-            // consumed as a string, and a leading `"` with no closer on the
-            // same line will fall through to here.
-            //
-            // Simplified: just skip for now (Vim is rare).  Treated as Hash
-            // but with `"` delimiter would be too ambiguous.  We won't
-            // special-case it — just leave as-is and accept minor FP for
-            // Vim files.
-            None
-        }
-        Percent => {
-            if bytes[i] == b'%' {
-                Some(consume_to_eol(bytes, i))
-            } else {
-                None
-            }
-        }
-    }
-}
-
-/// Consume from `start` to end-of-line (or end-of-input).
-/// Returns the number of bytes consumed (does NOT consume the newline itself).
-fn consume_to_eol(bytes: &[u8], start: usize) -> usize {
-    let mut j = start;
-    while j < bytes.len() && bytes[j] != b'\n' {
-        j += 1;
-    }
-    j - start
-}
-
-/// Consume from position `start` until we see `end_delim` or hit end-of-input.
-/// Returns the number of bytes consumed INCLUDING the end delimiter (minus the
-/// opening delimiter which the caller already accounted for).
-fn consume_block(bytes: &[u8], start: usize, end_delim: &[u8]) -> usize {
-    let dlen = end_delim.len();
-    let mut j = start;
-    while j + dlen <= bytes.len() {
-        if &bytes[j..j + dlen] == end_delim {
-            return (j + dlen) - start;
-        }
-        j += 1;
-    }
-    // Unterminated — consume to end
-    bytes.len() - start
-}
-
-// ---------------------------------------------------------------------------
-// String matchers
-// ---------------------------------------------------------------------------
-
-/// Try to match a string literal starting at position `i`.
-/// Returns `Some(byte_count_consumed)` or `None`.
-fn try_string(bytes: &[u8], i: usize, syntax: &LangSyntax) -> Option<usize> {
-    for style in syntax.strings {
-        if let Some(n) = match_string(bytes, i, *style) {
-            return Some(n);
-        }
-    }
-    None
-}
-
-fn match_string(bytes: &[u8], i: usize, style: StringStyle) -> Option<usize> {
-    let remaining = bytes.len() - i;
-    match style {
-        Double => {
-            if bytes[i] == b'"' {
-                Some(consume_escaped_string(bytes, i + 1, b'"') + 1)
-            } else {
-                None
-            }
-        }
-        Single => {
-            if bytes[i] == b'\'' {
-                Some(consume_escaped_string(bytes, i + 1, b'\'') + 1)
-            } else {
-                None
-            }
-        }
-        Backtick => {
-            if bytes[i] == b'`' {
-                Some(consume_escaped_string(bytes, i + 1, b'`') + 1)
-            } else {
-                None
-            }
-        }
-        TripleDouble => {
-            if remaining >= 3 && &bytes[i..i + 3] == b"\"\"\"" {
-                Some(consume_triple(bytes, i + 3, b"\"\"\"") + 3)
-            } else {
-                None
-            }
-        }
-        TripleSingle => {
-            if remaining >= 3 && &bytes[i..i + 3] == b"'''" {
-                Some(consume_triple(bytes, i + 3, b"'''") + 3)
-            } else {
-                None
-            }
-        }
-        PythonRawDouble => {
-            // r" or R"
-            if remaining >= 2
-                && (bytes[i] == b'r' || bytes[i] == b'R')
-                && bytes[i + 1] == b'"'
-            {
-                // Raw strings don't process backslash escapes, but we still
-                // need to find the closing `"`
-                Some(consume_raw_simple(bytes, i + 2, b'"') + 2)
-            } else {
-                None
-            }
-        }
-        PythonRawSingle => {
-            if remaining >= 2
-                && (bytes[i] == b'r' || bytes[i] == b'R')
-                && bytes[i + 1] == b'\''
-            {
-                Some(consume_raw_simple(bytes, i + 2, b'\'') + 2)
-            } else {
-                None
-            }
-        }
-        RustRaw => {
-            // r"...", r#"..."#, r##"..."##, etc.
-            if bytes[i] != b'r' {
-                return None;
-            }
-            // Count hashes
-            let mut hashes = 0usize;
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j] == b'#' {
-                hashes += 1;
-                j += 1;
-            }
-            if j >= bytes.len() || bytes[j] != b'"' {
-                return None;
-            }
-            j += 1; // skip opening "
-
-            // Build the closing delimiter: "###
-            let mut close = vec![b'"'];
-            for _ in 0..hashes {
-                close.push(b'#');
-            }
-
-            // Find the closing delimiter
-            while j + close.len() <= bytes.len() {
-                if &bytes[j..j + close.len()] == close.as_slice() {
-                    return Some((j + close.len()) - i);
-                }
-                j += 1;
-            }
-            // Unterminated
-            Some(bytes.len() - i)
-        }
-    }
-}
-
-/// Consume an escape-aware string body starting just AFTER the opening quote.
-/// Returns bytes consumed INCLUDING the closing quote.
-fn consume_escaped_string(bytes: &[u8], start: usize, quote: u8) -> usize {
-    let mut j = start;
-    while j < bytes.len() {
-        if bytes[j] == b'\\' {
-            j += 2; // skip escaped char
-            continue;
-        }
-        if bytes[j] == quote {
-            return (j + 1) - start; // include closing quote
-        }
-        j += 1;
-    }
-    // Unterminated — consume to end
-    bytes.len() - start
-}
-
-/// Consume a raw string (no escape processing) until `quote`.
-fn consume_raw_simple(bytes: &[u8], start: usize, quote: u8) -> usize {
-    let mut j = start;
-    while j < bytes.len() {
-        if bytes[j] == quote {
-            return (j + 1) - start;
-        }
-        j += 1;
-    }
-    bytes.len() - start
-}
-
-/// Consume a triple-quoted string body starting just AFTER the opening `"""`/`'''`.
-/// Returns bytes consumed INCLUDING the closing triple quote.
-fn consume_triple(bytes: &[u8], start: usize, delim: &[u8]) -> usize {
-    let dlen = delim.len();
-    let mut j = start;
-    while j + dlen <= bytes.len() {
-        // Triple-quoted strings still honour `\"` / `\'` escapes
-        if bytes[j] == b'\\' {
-            j += 2;
-            continue;
-        }
-        if &bytes[j..j + dlen] == delim {
-            return (j + dlen) - start;
-        }
-        j += 1;
-    }
-    bytes.len() - start
-}
-
-// ---------------------------------------------------------------------------
-// Helper: blank bytes preserving newlines
-// ---------------------------------------------------------------------------
-
+/// Replace bytes with spaces, keeping `\n` intact.
 fn blank_preserving_newlines(span: &[u8], out: &mut Vec<u8>) {
     for &b in span {
-        if b == b'\n' {
-            out.push(b'\n');
-        } else {
-            out.push(b' ');
-        }
+        out.push(if b == b'\n' { b'\n' } else { b' ' });
     }
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Tests
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // -- Helper --
     fn san(input: &str, ext: &str) -> String {
-        let syntax = syntax_for_extension(ext);
-        sanitize(input, syntax)
+        sanitize(input, syntax_for_extension(ext))
     }
 
-    // ======================================================================
-    // C-style comments
-    // ======================================================================
+    // -- C-style comments ---------------------------------------------------
 
     #[test]
     fn c_line_comment_stripped() {
-        let input = "int x = 1; // { not a brace\nint y = 2;";
-        let result = san(input, "c");
-        assert!(!result.contains('{'));
-        assert!(result.contains("int x = 1;"));
-        assert!(result.contains("int y = 2;"));
+        let r = san("int x = 1; // { not a brace\nint y = 2;", "c");
+        assert!(!r.contains('{'));
+        assert!(r.contains("int x = 1;"));
+        assert!(r.contains("int y = 2;"));
     }
 
     #[test]
     fn c_block_comment_stripped() {
-        let input = "int x = /* { [ ( */ 1;";
-        let result = san(input, "c");
-        assert!(!result.contains('{'));
-        assert!(!result.contains('['));
-        assert!(!result.contains('('));
+        let r = san("int x = /* { [ ( */ 1;", "c");
+        assert!(!r.contains('{'));
+        assert!(!r.contains('['));
+        assert!(!r.contains('('));
     }
 
     #[test]
     fn c_block_comment_multiline() {
-        let input = "a\n/* {\n [ \n */ b";
-        let result = san(input, "c");
-        // Should preserve 4 lines
-        assert_eq!(result.lines().count(), 4);
-        assert!(!result.contains('{'));
-        assert!(!result.contains('['));
+        let r = san("a\n/* {\n [ \n */ b", "c");
+        assert_eq!(r.lines().count(), 4);
+        assert!(!r.contains('{'));
+        assert!(!r.contains('['));
     }
 
-    // ======================================================================
-    // Python comments and strings
-    // ======================================================================
+    // -- Python -------------------------------------------------------------
 
     #[test]
     fn python_hash_comment() {
-        let input = "x = 1  # { not a brace\ny = 2";
-        let result = san(input, "py");
-        assert!(!result.contains('{'));
+        let r = san("x = 1  # { not a brace\ny = 2", "py");
+        assert!(!r.contains('{'));
     }
 
     #[test]
     fn python_triple_double_string() {
-        let input = r#"x = """{ [ ( not braces }"""  "#;
-        let result = san(input, "py");
-        assert!(!result.contains('{'));
-        assert!(!result.contains('['));
+        let r = san(r#"x = """{ [ ( not braces }"""  "#, "py");
+        assert!(!r.contains('{'));
+        assert!(!r.contains('['));
     }
 
     #[test]
     fn python_triple_single_string() {
-        let input = "x = '''{ [ ('''";
-        let result = san(input, "py");
-        assert!(!result.contains('{'));
+        let r = san("x = '''{ [ ('''", "py");
+        assert!(!r.contains('{'));
     }
 
     #[test]
-    fn python_raw_string() {
-        let input = r#"x = r"{ not a brace }""#;
-        let result = san(input, "py");
-        assert!(!result.contains('{'));
+    fn python_raw_string_double() {
+        let r = san(r#"x = r"{ not a brace }""#, "py");
+        assert!(!r.contains('{'));
     }
 
-    // ======================================================================
-    // Rust comments and strings
-    // ======================================================================
+    #[test]
+    fn python_raw_string_single() {
+        let r = san("x = r'{ not a brace }'", "py");
+        assert!(!r.contains('{'));
+    }
+
+    // -- Rust ---------------------------------------------------------------
 
     #[test]
     fn rust_line_comment() {
-        let input = "let x = 1; // { unclosed\nlet y = 2;";
-        let result = san(input, "rs");
-        assert!(!result.contains('{'));
+        let r = san("let x = 1; // { unclosed\nlet y = 2;", "rs");
+        assert!(!r.contains('{'));
     }
 
     #[test]
-    fn rust_raw_string() {
-        let input = r###"let s = r#"{ not a brace }"#;"###;
-        let result = san(input, "rs");
-        // The braces inside the raw string should be blanked
-        // Only the semicolon brace-relevant chars should remain from outside
-        assert!(!result.contains('{'));
+    fn rust_raw_string_one_hash() {
+        let r = san(r###"let s = r#"{ not a brace }"#;"###, "rs");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn rust_raw_string_no_hash() {
+        let r = san(r#"let s = r"{ brace }";"#, "rs");
+        assert!(!r.contains('{'));
     }
 
     #[test]
     fn rust_double_string_with_escape() {
-        let input = r#"let s = "hello \"world\" { notabrace }";"#;
-        let result = san(input, "rs");
-        assert!(!result.contains('{'));
+        let r = san(r#"let s = "hello \"world\" { notabrace }";"#, "rs");
+        assert!(!r.contains('{'));
     }
 
-    // ======================================================================
-    // JS/TS template literals
-    // ======================================================================
+    // -- JS/TS backtick templates -------------------------------------------
 
     #[test]
     fn js_backtick_template() {
-        let input = "let s = `hello { world }`;";
-        let result = san(input, "js");
-        assert!(!result.contains('{'));
+        let r = san("let s = `hello { world }`;", "js");
+        assert!(!r.contains('{'));
     }
 
     #[test]
     fn ts_backtick_template() {
-        let input = "const x = `{ braces } inside`;";
-        let result = san(input, "ts");
-        assert!(!result.contains('{'));
+        let r = san("const x = `{ braces } inside`;", "ts");
+        assert!(!r.contains('{'));
     }
 
-    // ======================================================================
-    // Haskell
-    // ======================================================================
+    #[test]
+    fn js_escaped_backtick() {
+        let r = san(r"`hello \` { still inside`", "js");
+        assert!(!r.contains('{'));
+    }
+
+    // -- Haskell ------------------------------------------------------------
 
     #[test]
     fn haskell_line_comment() {
-        let input = "x = 1 -- { not brace\ny = 2";
-        let result = san(input, "hs");
-        assert!(!result.contains('{'));
+        let r = san("x = 1 -- { not brace\ny = 2", "hs");
+        assert!(!r.contains('{'));
     }
 
     #[test]
     fn haskell_block_comment() {
-        let input = "x = {- { [ ( -} 1";
-        let result = san(input, "hs");
-        assert!(!result.contains('['));
-        assert!(!result.contains('('));
+        let r = san("x = {- { [ ( -} 1", "hs");
+        assert!(!r.contains('['));
+        assert!(!r.contains('('));
     }
 
-    // ======================================================================
-    // OCaml
-    // ======================================================================
+    // -- OCaml --------------------------------------------------------------
 
     #[test]
     fn ocaml_block_comment() {
-        let input = "let x = (* { [ *) 1";
-        let result = san(input, "ml");
-        assert!(!result.contains('{'));
-        assert!(!result.contains('['));
+        let r = san("let x = (* { [ *) 1", "ml");
+        assert!(!r.contains('{'));
+        assert!(!r.contains('['));
     }
 
-    // ======================================================================
-    // HTML/XML
-    // ======================================================================
+    // -- HTML/XML -----------------------------------------------------------
 
     #[test]
     fn html_comment() {
-        let input = "<div><!-- { [ ( --></div>";
-        let result = san(input, "html");
-        assert!(!result.contains('{'));
-        assert!(!result.contains('['));
+        let r = san("<div><!-- { [ ( --></div>", "html");
+        assert!(!r.contains('{'));
+        assert!(!r.contains('['));
     }
 
-    // ======================================================================
-    // SQL
-    // ======================================================================
+    // -- SQL ----------------------------------------------------------------
 
     #[test]
     fn sql_line_comment() {
-        let input = "SELECT 1; -- { not\nSELECT 2;";
-        let result = san(input, "sql");
-        assert!(!result.contains('{'));
+        let r = san("SELECT 1; -- { not\nSELECT 2;", "sql");
+        assert!(!r.contains('{'));
     }
 
-    // ======================================================================
-    // Erlang
-    // ======================================================================
+    // -- Erlang -------------------------------------------------------------
 
     #[test]
     fn erlang_percent_comment() {
-        let input = "X = 1. % { not\nY = 2.";
-        let result = san(input, "erl");
-        assert!(!result.contains('{'));
+        let r = san("X = 1. % { not\nY = 2.", "erl");
+        assert!(!r.contains('{'));
     }
 
-    // ======================================================================
-    // Clojure
-    // ======================================================================
+    // -- Clojure ------------------------------------------------------------
 
     #[test]
     fn clojure_semicolon_comment() {
-        let input = "(def x 1) ; { not\n(def y 2)";
-        let result = san(input, "clj");
-        assert!(!result.contains('{'));
+        let r = san("(def x 1) ; { not\n(def y 2)", "clj");
+        assert!(!r.contains('{'));
     }
 
-    // ======================================================================
-    // JSON — strings only
-    // ======================================================================
+    // -- JSON ---------------------------------------------------------------
 
     #[test]
     fn json_string_stripped() {
-        let input = r#"{"key": "value { } [ ]"}"#;
-        let result = san(input, "json");
-        // The braces inside the string value should be blanked,
-        // but the structural { } should remain
-        assert!(result.starts_with('{'));
-        assert!(result.ends_with('}'));
-        // Count structural braces: should be exactly { and }
-        let braces: Vec<char> = result.chars().filter(|c| *c == '{' || *c == '}').collect();
-        assert_eq!(braces.len(), 2);
+        let r = san(r#"{"key": "value { } [ ]"}"#, "json");
+        assert!(r.starts_with('{'));
+        assert!(r.ends_with('}'));
+        assert_eq!(r.chars().filter(|c| *c == '{' || *c == '}').count(), 2);
     }
 
-    // ======================================================================
-    // Escaped quotes inside strings
-    // ======================================================================
+    // -- Escaped quotes -----------------------------------------------------
 
     #[test]
     fn escaped_double_quote_in_string() {
-        // The \" should NOT end the string
-        let input = r#""hello \" { still inside""#;
-        let result = san(input, "json");
-        assert!(!result.contains('{'));
+        let r = san(r#""hello \" { still inside""#, "json");
+        assert!(!r.contains('{'));
     }
 
     #[test]
     fn escaped_single_quote_in_string() {
-        let input = r"'hello \' { still inside'";
-        let result = san(input, "js");
-        assert!(!result.contains('{'));
+        let r = san(r"'hello \' { still inside'", "js");
+        assert!(!r.contains('{'));
     }
 
-    #[test]
-    fn escaped_backtick_in_template() {
-        let input = r"`hello \` { still inside`";
-        let result = san(input, "js");
-        assert!(!result.contains('{'));
-    }
-
-    // ======================================================================
-    // Line preservation
-    // ======================================================================
+    // -- Preservation guarantees --------------------------------------------
 
     #[test]
-    fn line_count_preserved_after_sanitize() {
+    fn line_count_preserved() {
         let input = "line1\n\"str { \\n\ncontd\"\nline4";
-        let result = san(input, "json");
-        assert_eq!(input.lines().count(), result.lines().count());
+        let r = san(input, "json");
+        assert_eq!(input.lines().count(), r.lines().count());
     }
-
-    // ======================================================================
-    // Length preservation
-    // ======================================================================
 
     #[test]
     fn byte_length_preserved() {
         let input = "/* { block } */\n\"string { }\"\n// line { }";
-        let result = san(input, "rs");
-        assert_eq!(input.len(), result.len());
+        let r = san(input, "rs");
+        assert_eq!(input.len(), r.len());
     }
 
-    // ======================================================================
-    // Mixed: real braces survive
-    // ======================================================================
+    // -- Mixed: structural braces survive -----------------------------------
 
     #[test]
-    fn real_braces_survive_sanitize() {
-        let input = "fn main() { let x = [1]; } // { comment }";
-        let result = san(input, "rs");
-        // Structural braces survive
-        assert!(result.contains("fn main()"));
-        assert!(result.contains("{ let x = [1]; }"));
-        // Comment braces gone
-        let comment_part = &result[result.find("//").unwrap_or(result.len())..];
-        assert!(!comment_part.contains('{'));
+    fn real_braces_survive() {
+        let r = san("fn main() { let x = [1]; } // { comment }", "rs");
+        assert!(r.contains("{ let x = [1]; }"));
+        let after_structural = &r[27..];
+        assert!(!after_structural.contains('{'));
     }
 
-    // ======================================================================
-    // PHP has three comment styles
-    // ======================================================================
+    // -- PHP (three comment styles) -----------------------------------------
 
     #[test]
     fn php_all_comment_styles() {
-        let input = "$x = 1; // { a\n$y = 2; /* { b */ $z = 3; # { c\n$w = 4;";
-        let result = san(input, "php");
-        let brace_count = result.chars().filter(|c| *c == '{').count();
-        assert_eq!(brace_count, 0);
+        let r = san("$x = 1; // { a\n$y = 2; /* { b */ $z = 3; # { c\n$w = 4;", "php");
+        assert_eq!(r.chars().filter(|c| *c == '{').count(), 0);
     }
 
-    // ======================================================================
-    // Kotlin triple-quoted string
-    // ======================================================================
+    // -- Kotlin triple-quoted string ----------------------------------------
 
     #[test]
     fn kotlin_triple_string() {
-        let input = "val s = \"\"\"{ [ ( not braces }\"\"\"\nval x = 1";
-        let result = san(input, "kt");
-        assert!(!result.contains('{'));
+        let r = san("val s = \"\"\"{ [ ( not braces }\"\"\"\nval x = 1", "kt");
+        assert!(!r.contains('{'));
     }
 
-    // ======================================================================
-    // F# has // and (* *)
-    // ======================================================================
+    // -- F# (// and (* *)) -------------------------------------------------
 
     #[test]
     fn fsharp_both_comment_styles() {
-        let input = "let x = 1 // { a\nlet y = (* { b *) 2";
-        let result = san(input, "fs");
-        let brace_count = result.chars().filter(|c| *c == '{').count();
-        assert_eq!(brace_count, 0);
+        let r = san("let x = 1 // { a\nlet y = (* { b *) 2", "fs");
+        assert_eq!(r.chars().filter(|c| *c == '{').count(), 0);
     }
 
-    // ======================================================================
-    // TOML / YAML
-    // ======================================================================
+    // -- TOML / YAML --------------------------------------------------------
 
     #[test]
     fn toml_hash_comment_and_string() {
-        let input = "key = \"value { }\" # { comment }";
-        let result = san(input, "toml");
-        let brace_count = result.chars().filter(|c| *c == '{' || *c == '}').count();
-        assert_eq!(brace_count, 0);
+        let r = san("key = \"value { }\" # { comment }", "toml");
+        assert_eq!(r.chars().filter(|c| *c == '{' || *c == '}').count(), 0);
     }
 
     #[test]
     fn yaml_hash_comment() {
-        let input = "key: value # { not a brace }\nother: 1";
-        let result = san(input, "yml");
-        assert!(!result.contains('{'));
+        let r = san("key: value # { not a brace }\nother: 1", "yml");
+        assert!(!r.contains('{'));
     }
 
-    // ======================================================================
-    // No syntax (unknown extension) — pass through unchanged
-    // ======================================================================
+    // -- Unknown extension passes through -----------------------------------
 
     #[test]
     fn unknown_extension_passthrough() {
         let input = "{ [ ( ) ] } // not stripped # not stripped";
-        let result = san(input, "xyz");
-        assert_eq!(input, result);
+        assert_eq!(san(input, "xyz"), input);
     }
 }

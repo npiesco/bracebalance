@@ -1,8 +1,18 @@
 // Deeply nested Rust - BALANCED
 // Brace traps: { [ ( } ] )
 /* Block comment { unmatched [ ( */
+/*
+ * Extended block trap:
+ *   fn fake() { vec![(1, {2: [3]})] }
+ *   match x { Foo(y) => [y], Bar{z} => (z) }
+ */
+/// Doc comment trap: `HashMap<String, Vec<(i32, {key})>>` 
+/// More doc: `fn foo() -> Result<(), Box<dyn Error>> { Ok(()) }`
 const TRAP: &str = "{ unmatched [ brace in string";
 const RAW_TRAP: &str = r#"{ raw [ string ( trap"#;
+const RAW2: &str = r##"double hash raw: { [( )]} "##;
+const ESCAPED: &str = "escaped \" quote with { brace";
+const BACKSLASH: &str = "trailing backslash \\ then { brace";
 
 enum DeepEnum {
     Variant1(Vec<(i32, Box<DeepEnum>)>),

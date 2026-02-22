@@ -1,4 +1,13 @@
-"""Deeply nested Python - HAS ISSUES (missing closers)"""
+"""Deeply nested Python - HAS ISSUES (missing closers)
+
+Docstring trap: dict({ 'key': [1, 2, (3, 4 } ]
+More traps: list([ { ( ] ) }
+"""
+# Line comment trap: { [ ( } ] )
+# Another: data = {"key": [1, (2, 3]}
+_TRAP = "string trap: { [ ( } ] )"
+_TRAP2 = 'single string trap: dict({ key: [val }'
+_TRAP3 = r"raw string trap: [ { ( ] } )"
 
 def broken_function():
     data = {

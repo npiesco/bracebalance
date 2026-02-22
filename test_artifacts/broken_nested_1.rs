@@ -1,4 +1,14 @@
 // Deeply nested Rust - HAS ISSUES (missing closers)
+// Comment trap: { [ ( } ] )
+/* Block comment trap: vec![ (1, 2, 3 ] */
+/*
+ *  Extended block trap:
+ *      HashMap::new().insert("k", vec![ (10, 20 );
+ *      let x = { y + (z * [w };
+ */
+/// Doc comment trap: `fn foo() -> Vec<(i32, HashMap<&str, [u8]>)>`
+const _TRAP: &str = "unbalanced in string: { [ ( } ] )";
+const _TRAP2: &str = r#"raw string trap: vec![ { ( ]"#;
 
 use std::collections::HashMap;
 

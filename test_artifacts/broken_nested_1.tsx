@@ -1,4 +1,15 @@
 // Deeply nested TSX - HAS ISSUES (missing closers)
+// Comment trap: { [ ( } ] )
+/* Block comment trap:
+ *   const x: Record<string, Array<[number, {key: (string}]>> = {};
+ *   <Component data={{ items: [1, (2, 3] }} />
+ */
+/**
+ * @typedef {{ data: { sections: Array<{items: Array<{nested: {values: number[]}}>}> } }} Props
+ */
+const _tsxTrap = "string trap: { [ ( } ] )";
+const _tsxTrap2 = `template trap: ${ "{ [ (" } ] )`;
+const _tsxTrap3 = 'single trap: { [ ( } ] )';
 
 import React, { useState } from "react";
 

@@ -1,8 +1,16 @@
 // Deeply nested TSX - BALANCED
 // Comment traps: { [ ( } ] )
 /* Block { [ ( */
+/*
+ * Extended block:
+ *   interface Fake { items: Array<[string, {key: number}]> }
+ *   <Component prop={{ key: [1, (2, 3)] }} />
+ */
+/** Component doc: `{ layers: Array<{items: [{nested: {deep: number[]}}]}> }` */
 const tsxTrap = "{ string [ brace ( trap";
 const tsxTrap2 = `template { literal [ trap`;
+const tsxTrap3 = 'single: { [ ( } ] )';
+const tsxTrap4 = "escaped: \" still { inside";
 
 import React, { useReducer, createContext, useContext } from "react";
 

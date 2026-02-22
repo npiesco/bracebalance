@@ -1,4 +1,7 @@
 {
+    "string_trap_1": "{ [ ( } ] ) — ignored by sanitizer",
+    "string_trap_2": "escaped: \" still inside { [ (",
+    "string_trap_3": "code: function() { return [1, (2, 3)]; }",
     "schema": {
         "entities": {
             "User": {

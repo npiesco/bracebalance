@@ -1,8 +1,17 @@
 // Deeply nested JavaScript - BALANCED
 // Comment traps: { [ ( } ] )
 /* Block { [ ( */
+/*
+ * Extended block:
+ *   function fake() { return [1, {2: (3)}]; }
+ *   const obj = { a: [1, (2, 3)], b: {c: [{d: 4}]} };
+ */
+/** @returns {{ result: Array<[number, {key: string}]> }} */
 const jsTrap = "{ string [ brace ( trap";
 const jsTrap2 = `template { literal [ trap`;
+const jsTrap3 = 'single: { [ ( } ] )';
+const jsTrap4 = "escaped: \" still { in string";
+const jsTrap5 = `escaped: \` still { in template`;
 
 class EventSystem {
     constructor() {

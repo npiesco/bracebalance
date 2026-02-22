@@ -1,8 +1,17 @@
 // Deeply nested TypeScript - BALANCED
 // Comment traps: { [ ( } ] )
 /* Block { [ ( */
+/*
+ * Extended block:
+ *   interface Fake { field: Array<[number, {key: string}]> }
+ *   const x = { a: [1, (2, 3)] };
+ */
+/** JSDoc: `Record<string, Array<{id: number}>>` */
 const trap = "{ string [ brace ( trap";
 const trap2 = `template { literal [ trap`;
+const trap3 = 'single quote { [ ( trap';
+const trap4 = "escaped: \" still { in string";
+const trap5 = `escaped backtick: \` still { in template`;
 
 type RecursiveTree<T> = {
     value: T;

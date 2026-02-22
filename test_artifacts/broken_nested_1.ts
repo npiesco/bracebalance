@@ -1,4 +1,16 @@
 // Deeply nested TypeScript - HAS ISSUES (missing closers)
+// Comment trap: { [ ( } ] )
+/* Block comment trap:
+ *   const x: Array<{items: [number, {key: string}]> = [;
+ *   interface Fake { broken: [number, (string };
+ */
+/**
+ * @param config - `{ data: Array<[string, {nested: [number]}> }`
+ * @returns `{ result: Array<(number, [string])> }`
+ */
+const _trap = "string trap: { [ ( } ] )";
+const _trap2 = `template trap: ${ "{ [ (" } ] )`;
+const _trap3 = 'single trap: { [ ( } ] )';
 
 interface BrokenConfig {
     data: {

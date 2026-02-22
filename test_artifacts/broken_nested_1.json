@@ -1,4 +1,7 @@
 {
+    "__comment_trap": "This is not real JSON comment but string traps: { [ ( } ] )",
+    "__trap2": "escaped: \" still { inside [ another (",
+    "__trap3": "code: function() { return [1, (2, 3]; }",
     "pipeline": {
         "stages": [
             {

@@ -1,0 +1,122 @@
+{
+    "description": "Deeply nested JSON — BALANCED (strings contain brace traps)",
+    "string_trap_1": "{ [ ( } ] ) {[()]} — must be ignored",
+    "string_trap_2": "escaped quote: \" still inside { [ (",
+    "string_trap_3": "backslash: \\ then { brace",
+    "string_trap_4": "code-like: function() { return [1, (2, 3)]; }",
+    "database": {
+        "connections": [
+            {
+                "primary": {
+                    "host": "localhost",
+                    "string_trap": "{ unmatched [ ( in string }",
+                    "options": {
+                        "pool": {
+                            "min": [2, 4],
+                            "max": [10, 20],
+                            "callbacks": [
+                                {
+                                    "name": "on_connect",
+                                    "string_trap": "config = { key: [1, (2, 3)] }",
+                                    "params": {
+                                        "retries": [1, 2, 3],
+                                        "backoff": {
+                                            "type": "exponential",
+                                            "nested_trap": "{ { { [ [ [ ( ( ( ) ) ) ] ] ] } } }",
+                                            "params": {
+                                                "base": [100, 200],
+                                                "multiplier": [1.5, 2.0],
+                                                "jitter": {
+                                                    "range": [0.1, 0.5],
+                                                    "distribution": "uniform",
+                                                    "meta": {
+                                                        "deep": [
+                                                            [1, [2, [3, [4, [5]]]]],
+                                                            {"inner": [6, [7, {"deeper": [8, 9]}]]}
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                {
+                                    "name": "on_error",
+                                    "handler_trap": "fn(x) { throw [new Error({msg: (x)})] }",
+                                    "params": {
+                                        "retries": [4, 5, 6],
+                                        "backoff": {
+                                            "type": "linear",
+                                            "params": {
+                                                "base": [50, 100],
+                                                "increment": [10, 20]
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                },
+                "replicas": [
+                    {
+                        "host": "replica1",
+                        "weights": {
+                            "read": [1, 2, 3],
+                            "write": [0, 0, 0],
+                            "computed": {
+                                "scores": [
+                                    [10, [20, [30, [40, 50]]]],
+                                    [60, [70, [80]]]
+                                ]
+                            }
+                        }
+                    },
+                    {
+                        "host": "replica2",
+                        "code_trap": "{ a: [1, (2, 3)], b: {c: [{d: 4}]} }",
+                        "weights": {
+                            "read": [4, 5, 6],
+                            "write": [1, 1, 1],
+                            "computed": {
+                                "scores": [
+                                    [100, [200, [300]]],
+                                    [400, [500]]
+                                ]
+                            }
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    "cache": {
+        "layers": [
+            {
+                "name": "L1",
+                "trap": "evict({ keys: [1,2], cb: (x) => [x] })",
+                "config": {
+                    "size": [1024, [2048, {"unit": "KB"}]],
+                    "eviction": {
+                        "policy": "LRU",
+                        "params": {
+                            "threshold": [0.75, [0.85, {"adaptive": true}]]
+                        }
+                    }
+                }
+            },
+            {
+                "name": "L2",
+                "config": {
+                    "size": [4096, [8192, {"unit": "MB"}]],
+                    "eviction": {
+                        "policy": "LFU",
+                        "params": {
+                            "threshold": [0.90, [0.95, {"adaptive": false}]]
+                        }
+                    }
+                }
+            }
+        ]
+    }
+}

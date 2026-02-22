@@ -1,8 +1,16 @@
 // Deeply nested JSX - BALANCED
 // Comment traps: { [ ( } ] )
 /* Block { [ ( */
+/*
+ * Extended block:
+ *   <Component prop={{ key: [1, (2, 3)] }} />
+ *   { conditionalRender && <div>{value}</div> }
+ */
+/** @param {{ data: Array<{id: number}> }} props */
 const jsxTrap = "{ string [ brace ( trap";
 const jsxTrap2 = `template { literal [ trap`;
+const jsxTrap3 = 'single: { [ ( } ] )';
+const jsxTrap4 = "escaped: \" still { inside";
 
 import React, { useReducer, useCallback } from "react";
 

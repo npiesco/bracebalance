@@ -1,10 +1,21 @@
-"""Deeply nested Python - BALANCED"""
+"""Deeply nested Python - BALANCED
+
+Docstring trap:
+    config = { "key": [1, (2, 3)] }
+    result = sorted([(x, {y: z}) for x in range(10)])
+    {{{ [[[ ((( ))) ]]] }}}
+"""
 
 # Comment with braces: { [ ( } ] )
+# Extended comment: def fake(): { return [1, (2, 3)] }
 trap1 = "String with { unmatched brace"
 trap2 = '''Triple-single
 with { braces [ ( inside
 '''
+trap3 = r"raw double: { unmatched [ ("
+trap4 = r'raw single: { } [ ] ( )'
+trap5 = "escaped quote: \" still inside { ["
+trap6 = 'escaped single: \' still inside { ['
 
 CONFIG = {
     "database": {

@@ -1,4 +1,14 @@
 // Deeply nested JSX - HAS ISSUES (missing closers)
+// Comment trap: { [ ( } ] )
+/* Block comment trap:
+ *   <Component prop={{ key: [1, (2, 3] }} />
+ *   {items.map((item => <div>{item.name}</div>)}
+ */
+/**
+ * @param {{ items: Array<{groups: Array<{entries: [{tags: [{label: string}]}]}>}> }} props
+ */
+const _jsxTrap = "string trap: { [ ( } ] )";
+const _jsxTrap2 = `template trap: ${ "{ [ (" } ] )`;
 
 import React, { useState } from "react";
 

@@ -1,4 +1,16 @@
 // Deeply nested JavaScript - HAS ISSUES (missing closers)
+// Comment trap: { [ ( } ] )
+/* Block comment trap:
+ *   const x = { key: [1, (2, 3] };
+ *   return [{ broken: (val }];
+ */
+/**
+ * @param {{ data: Array<[string, {items: number[]}> }} input
+ * @returns {{ result: Array<(number, [string])> }}
+ */
+const _trap = "string trap: { [ ( } ] )";
+const _trap2 = `template trap: ${ "{ [ (" } ] )`;
+const _trap3 = 'single trap: { [ ( } ] )';
 
 const brokenConfig = {
     database: {
