@@ -660,11 +660,23 @@ fn parse_ruby_percent_literal(input: &[u8]) -> IResult<&[u8], &[u8]> {
     };
     let body = &input[prefix_end + 1..];
     let mut pos = 0;
+    // For bracket-pair delimiters, track nesting depth so %q{ a { b } c } works correctly.
+    let is_bracket_pair = matches!(open, b'{' | b'[' | b'(' | b'<');
+    let mut depth: usize = 1;
     while pos < body.len() {
-        if body[pos] == close {
-            return Ok((&input[prefix_end + 1 + pos + 1..], &input[..prefix_end + 1 + pos + 1]));
+        if body[pos] == b'\\' && pos + 1 < body.len() {
+            pos += 2;
+            continue;
         }
-        if body[pos] == b'\\' && pos + 1 < body.len() { pos += 2; } else { pos += 1; }
+        if is_bracket_pair && body[pos] == open {
+            depth += 1;
+        } else if body[pos] == close {
+            depth -= 1;
+            if depth == 0 {
+                return Ok((&input[prefix_end + 1 + pos + 1..], &input[..prefix_end + 1 + pos + 1]));
+            }
+        }
+        pos += 1;
     }
     Ok((&input[input.len()..], input))
 }
@@ -731,7 +743,9 @@ fn parse_heredoc(input: &[u8]) -> IResult<&[u8], &[u8]> {
     while pos < input.len() {
         let line_start = pos;
         while pos < input.len() && input[pos] != b'\n' { pos += 1; }
-        let line = &input[line_start..pos];
+        let raw_line = &input[line_start..pos];
+        // Strip trailing \r for CRLF files before label matching.
+        let line = if raw_line.ends_with(b"\r") { &raw_line[..raw_line.len() - 1] } else { raw_line };
         let s = line.iter().position(|&b| !matches!(b, b' ' | b'\t')).unwrap_or(line.len());
         let stripped = &line[s..];
         if stripped.starts_with(label) {
@@ -1303,5 +1317,12 @@ mod tests {
     fn php_heredoc() {
         let r = san("$x = <<<EOT\n{ [ ( not braces\nEOT;\n", "php");
         assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn ruby_heredoc_crlf() {
+        // CRLF line endings must not prevent the terminator from being recognised.
+        let r = san("x = <<~HEREDOC\r\n  { [ ( not braces\r\nHEREDOC\r\nreal = {\r\n", "rb");
+        assert!(r.contains('{'), "real {{ should survive after CRLF heredoc; got: {r:?}");
     }
 }

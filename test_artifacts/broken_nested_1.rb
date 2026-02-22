@@ -42,3 +42,5 @@ def broken
 
   [data, result, nested]
 end
+
+_unclosed = {  # intentionally unclosed { — unambiguous break
