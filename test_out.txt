@@ -1,0 +1,25 @@
+﻿cargo :    Compiling bracebalance v0.1.0 
+(C:\Users\npiesco\bracebalance)
+At line:1 char:1
++ cargo test -- --test-output immediate 2>&1 | Out-File 
+-Encoding utf8  ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling br.. 
+   .o\bracebalance):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+error: function `elixir_sigil_S_triple` should have a snake 
+case name
+    --> src\sanitize.rs:1010:8
+     |
+1010 |     fn elixir_sigil_S_triple() {
+     |        ^^^^^^^^^^^^^^^^^^^^^ help: convert the 
+identifier to snake case (notice the capitalization): 
+`elixir_sigil_s_triple`
+     |
+     = note: `-D non-snake-case` implied by `-D warnings`
+     = help: to override `-D warnings` add 
+`#[allow(non_snake_case)]`
+
+error: could not compile `bracebalance` (lib test) due to 1 
+previous error

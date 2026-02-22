@@ -44,6 +44,8 @@ pub enum CommentStyle {
     Semicolon,
     /// `% ...` to end of line  (Erlang)
     Percent,
+    /// `"...` to end of line  (Vim)
+    VimLineComment,
 }
 
 /// String literal variants.
@@ -65,6 +67,16 @@ pub enum StringStyle {
     PythonRawSingle,
     /// `r#"..."#`  Rust raw string (variable hash count)
     RustRaw,
+    /// `[[ ... ]]`, `[=[ ... ]=]`, etc.  Lua long string / block
+    LuaLongString,
+    /// `~r/.../`, `~w{...}`, etc.  Elixir sigils (non-quote delimiter)
+    ElixirSigil,
+    /// `%q{...}`, `%w[...]`, etc.  Ruby percent literals
+    RubyPercentLiteral,
+    /// `$$...$$`, `$tag$...$tag$`  PostgreSQL dollar-quoting
+    SqlDollar,
+    /// `<<LABEL ... LABEL`  shell/ruby/php heredoc
+    Heredoc,
 }
 
 /// Combined syntax config for one language family.
@@ -128,7 +140,7 @@ static HTML: LangSyntax = LangSyntax {
 
 static SQL_STYLE: LangSyntax = LangSyntax {
     comments: &[DoubleDash, CBlockComment],
-    strings: &[Single],
+    strings: &[SqlDollar, Single],
 };
 
 static LISP: LangSyntax = LangSyntax {
@@ -148,17 +160,17 @@ static ELM: LangSyntax = LangSyntax {
 
 static ELIXIR: LangSyntax = LangSyntax {
     comments: &[Hash],
-    strings: &[TripleDouble, Double, Single],
+    strings: &[TripleDouble, Double, Single, ElixirSigil],
 };
 
 static PHP: LangSyntax = LangSyntax {
     comments: &[CLineComment, CBlockComment, Hash],
-    strings: &[Double, Single],
+    strings: &[Heredoc, Double, Single],
 };
 
 static LUA: LangSyntax = LangSyntax {
     comments: &[DoubleDash],
-    strings: &[Double, Single],
+    strings: &[LuaLongString, Double, Single],
 };
 
 static JSON_STYLE: LangSyntax = LangSyntax {
@@ -207,8 +219,28 @@ static EMACS_LISP: LangSyntax = LangSyntax {
 };
 
 static VIM: LangSyntax = LangSyntax {
-    comments: &[],
-    strings: &[Double, Single],
+    comments: &[VimLineComment],
+    strings: &[],
+};
+
+static GRAPHQL: LangSyntax = LangSyntax {
+    comments: &[Hash, CBlockComment],
+    strings: &[TripleDouble, Double],
+};
+
+static RUBY: LangSyntax = LangSyntax {
+    comments: &[Hash],
+    strings: &[TripleDouble, Double, Single, RubyPercentLiteral, Heredoc],
+};
+
+static SHELL: LangSyntax = LangSyntax {
+    comments: &[Hash],
+    strings: &[Heredoc, Double, Single],
+};
+
+static SWIFT: LangSyntax = LangSyntax {
+    comments: &[CLineComment, CBlockComment],
+    strings: &[TripleDouble, Double, Single],
 };
 
 static PLAIN: LangSyntax = LangSyntax {
@@ -221,15 +253,17 @@ pub fn syntax_for_extension(ext: &str) -> &'static LangSyntax {
     match ext {
         "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "vue" | "svelte" => &C_STYLE_BACKTICK,
         "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "hxx"
-        | "java" | "go" | "swift" | "dart" | "cs"
+        | "java" | "go" | "dart" | "cs"
         | "proto" | "tf" | "hcl" => &C_STYLE,
+        "swift" => &SWIFT,
         "kt" | "kts" => &KOTLIN,
         "scala" => &SCALA,
         "groovy" => &GROOVY,
         "rs" => &RUST,
         "py" => &PYTHON,
-        "rb" | "sh" | "bash" | "zsh" | "fish" | "r" | "pl" | "pm"
-        | "cmake" | "dockerfile" => &HASH_ONLY,
+        "rb" => &RUBY,
+        "sh" | "bash" | "zsh" | "fish" => &SHELL,
+        "r" | "pl" | "pm" | "cmake" | "dockerfile" => &HASH_ONLY,
         "php" => &PHP,
         "lua" => &LUA,
         "ex" | "exs" => &ELIXIR,
@@ -239,7 +273,8 @@ pub fn syntax_for_extension(ext: &str) -> &'static LangSyntax {
         "ml" | "mli" => &OCAML,
         "fs" | "fsi" | "fsx" => &FSHARP,
         "clj" | "cljs" | "cljc" => &LISP,
-        "sql" | "graphql" | "gql" => &SQL_STYLE,
+        "sql" => &SQL_STYLE,
+        "graphql" | "gql" => &GRAPHQL,
         "html" | "htm" | "xml" => &HTML,
         "json" => &JSON_STYLE,
         "jsonc" => &JSONC_STYLE,
@@ -319,30 +354,52 @@ fn parse_double_dash_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
     Ok((rest, &input[..len]))
 }
 
-/// `{- ... -}`
+/// `{- ... -}` — supports arbitrary nesting.
 fn parse_haskell_block_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
-    let (rest, _) = tag::<_, _, Err<'_>>(b"{-" as &[u8]).parse_complete(input)?;
-    match take_until::<_, _, Err<'_>>(b"-}" as &[u8]).parse_complete(rest) {
-        Ok((after, _)) => {
-            let (after, _) = tag::<_, _, Err<'_>>(b"-}" as &[u8]).parse_complete(after)?;
-            let len = input.len() - after.len();
-            Ok((after, &input[..len]))
-        }
-        Err(_) => Ok((&input[input.len()..], input)),
+    if input.len() < 2 || &input[..2] != b"{-" {
+        return Err(err(input));
     }
+    let mut depth: usize = 1;
+    let mut pos = 2; // after opening `{-`
+    while pos < input.len() {
+        if pos + 1 < input.len() && &input[pos..pos + 2] == b"{-" {
+            depth += 1;
+            pos += 2;
+        } else if pos + 1 < input.len() && &input[pos..pos + 2] == b"-}" {
+            depth -= 1;
+            pos += 2;
+            if depth == 0 {
+                return Ok((&input[pos..], &input[..pos]));
+            }
+        } else {
+            pos += 1;
+        }
+    }
+    Ok((&input[input.len()..], input))
 }
 
-/// `(* ... *)`
+/// `(* ... *)` — supports arbitrary nesting.
 fn parse_ocaml_block_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
-    let (rest, _) = tag::<_, _, Err<'_>>(b"(*" as &[u8]).parse_complete(input)?;
-    match take_until::<_, _, Err<'_>>(b"*)" as &[u8]).parse_complete(rest) {
-        Ok((after, _)) => {
-            let (after, _) = tag::<_, _, Err<'_>>(b"*)" as &[u8]).parse_complete(after)?;
-            let len = input.len() - after.len();
-            Ok((after, &input[..len]))
-        }
-        Err(_) => Ok((&input[input.len()..], input)),
+    if input.len() < 2 || &input[..2] != b"(*" {
+        return Err(err(input));
     }
+    let mut depth: usize = 1;
+    let mut pos = 2; // after opening `(*`
+    while pos < input.len() {
+        if pos + 1 < input.len() && &input[pos..pos + 2] == b"(*" {
+            depth += 1;
+            pos += 2;
+        } else if pos + 1 < input.len() && &input[pos..pos + 2] == b"*)" {
+            depth -= 1;
+            pos += 2;
+            if depth == 0 {
+                return Ok((&input[pos..], &input[..pos]));
+            }
+        } else {
+            pos += 1;
+        }
+    }
+    Ok((&input[input.len()..], input))
 }
 
 /// `<!-- ... -->`
@@ -515,33 +572,215 @@ fn parse_rust_raw_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
 }
 
 // ---------------------------------------------------------------------------
+// New parsers for gaps
+// ---------------------------------------------------------------------------
+
+/// `"` to end of line (Vim script).
+fn parse_vim_line_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (rest, _) = tag::<_, _, Err<'_>>(b"\"" as &[u8]).parse_complete(input)?;
+    let (rest, _) = take_while::<_, _, Err<'_>>(|b: u8| b != b'\n').parse_complete(rest)?;
+    let len = input.len() - rest.len();
+    Ok((rest, &input[..len]))
+}
+
+/// `[[...]]`, `[=[...]=]`, `[==[...]==]`, etc. — Lua long strings / block bodies.
+fn parse_lua_long_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    if input.is_empty() || input[0] != b'[' { return Err(err(input)); }
+    let mut eq_count = 0usize;
+    let mut pos = 1;
+    while pos < input.len() && input[pos] == b'=' { eq_count += 1; pos += 1; }
+    if pos >= input.len() || input[pos] != b'[' { return Err(err(input)); }
+    pos += 1; // skip second `[`
+    let mut close = Vec::with_capacity(2 + eq_count);
+    close.push(b']');
+    for _ in 0..eq_count { close.push(b'='); }
+    close.push(b']');
+    while pos + close.len() <= input.len() {
+        if &input[pos..pos + close.len()] == close.as_slice() {
+            let total = pos + close.len();
+            return Ok((&input[total..], &input[..total]));
+        }
+        pos += 1;
+    }
+    Ok((&input[input.len()..], input))
+}
+
+/// `~r/.../`, `~w{...}`, `~c(...)`, etc. — Elixir sigils with non-quote delimiters.
+/// `~s"..."` and `~S"""..."""` are already handled upstream by `Double`/`TripleDouble`.
+fn parse_elixir_sigil(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    if input.len() < 3 || input[0] != b'~' || !input[1].is_ascii_alphabetic() {
+        return Err(err(input));
+    }
+    let open = input[2];
+    let close: u8 = match open {
+        b'{' => b'}',
+        b'[' => b']',
+        b'(' => b')',
+        b'/' | b'|' => open,
+        _ => return Err(err(input)),
+    };
+    let body = &input[3..];
+    let mut pos = 0;
+    while pos < body.len() {
+        if body[pos] == close {
+            return Ok((&input[3 + pos + 1..], &input[..3 + pos + 1]));
+        }
+        if close == open && body[pos] == b'\\' && pos + 1 < body.len() {
+            pos += 2;
+        } else {
+            pos += 1;
+        }
+    }
+    Ok((&input[input.len()..], input))
+}
+
+/// `%q{...}`, `%Q[...]`, `%w(...)`, `%(...)`, etc. — Ruby percent literals.
+fn parse_ruby_percent_literal(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    if input.is_empty() || input[0] != b'%' { return Err(err(input)); }
+    let (prefix_end, open) = if input.len() >= 2 {
+        let c = input[1];
+        if matches!(c, b'q' | b'Q' | b'w' | b'W' | b'i' | b'I' | b'r' | b's' | b'x') {
+            if input.len() < 3 { return Err(err(input)); }
+            (2usize, input[2])
+        } else if c.is_ascii_punctuation() && c != b'_' {
+            (1usize, c)
+        } else {
+            return Err(err(input));
+        }
+    } else {
+        return Err(err(input));
+    };
+    let close: u8 = match open {
+        b'{' => b'}',
+        b'[' => b']',
+        b'(' => b')',
+        b'<' => b'>',
+        c if c.is_ascii_punctuation() => c,
+        _ => return Err(err(input)),
+    };
+    let body = &input[prefix_end + 1..];
+    let mut pos = 0;
+    while pos < body.len() {
+        if body[pos] == close {
+            return Ok((&input[prefix_end + 1 + pos + 1..], &input[..prefix_end + 1 + pos + 1]));
+        }
+        if body[pos] == b'\\' && pos + 1 < body.len() { pos += 2; } else { pos += 1; }
+    }
+    Ok((&input[input.len()..], input))
+}
+
+/// `$$...$$` and `$tag$...$tag$` — PostgreSQL dollar-quoting.
+fn parse_sql_dollar_quote(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    if input.is_empty() || input[0] != b'$' { return Err(err(input)); }
+    let mut tag_end = 1;
+    while tag_end < input.len() && input[tag_end] != b'$' {
+        let b = input[tag_end];
+        if !b.is_ascii_alphanumeric() && b != b'_' { return Err(err(input)); }
+        tag_end += 1;
+    }
+    if tag_end >= input.len() { return Err(err(input)); }
+    let tag = &input[..tag_end + 1]; // e.g. `$$` or `$body$`
+    let mut pos = tag_end + 1;
+    while pos + tag.len() <= input.len() {
+        if &input[pos..pos + tag.len()] == tag {
+            let total = pos + tag.len();
+            return Ok((&input[total..], &input[..total]));
+        }
+        pos += 1;
+    }
+    Ok((&input[input.len()..], input))
+}
+
+/// `<<LABEL`, `<<~LABEL`, `<<"LABEL"`, `<<<LABEL` (PHP), etc. — heredoc literals.
+fn parse_heredoc(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    let (arrow_len, after_arrows) = if input.starts_with(b"<<<") {
+        (3usize, &input[3..])
+    } else if input.starts_with(b"<<") {
+        (2usize, &input[2..])
+    } else {
+        return Err(err(input));
+    };
+    let (modifier_len, label_start) = if !after_arrows.is_empty()
+        && matches!(after_arrows[0], b'-' | b'~')
+    {
+        (1usize, &after_arrows[1..])
+    } else {
+        (0usize, after_arrows)
+    };
+    let (label, label_field_len) =
+        if !label_start.is_empty() && matches!(label_start[0], b'"' | b'\'' | b'`') {
+            let q = label_start[0];
+            let mut i = 1;
+            while i < label_start.len() && label_start[i] != q { i += 1; }
+            if i >= label_start.len() { return Err(err(input)); }
+            (&label_start[1..i], i + 1)
+        } else {
+            let mut i = 0;
+            while i < label_start.len()
+                && (label_start[i].is_ascii_alphanumeric() || label_start[i] == b'_')
+            { i += 1; }
+            if i == 0 { return Err(err(input)); }
+            (&label_start[..i], i)
+        };
+    if label.is_empty() { return Err(err(input)); }
+    let header_end = arrow_len + modifier_len + label_field_len;
+    let mut pos = header_end;
+    while pos < input.len() && input[pos] != b'\n' { pos += 1; }
+    if pos >= input.len() { return Err(err(input)); }
+    pos += 1; // skip opening line's \n
+    while pos < input.len() {
+        let line_start = pos;
+        while pos < input.len() && input[pos] != b'\n' { pos += 1; }
+        let line = &input[line_start..pos];
+        let s = line.iter().position(|&b| !matches!(b, b' ' | b'\t')).unwrap_or(line.len());
+        let stripped = &line[s..];
+        if stripped.starts_with(label) {
+            let rest = &stripped[label.len()..];
+            let rt = rest.iter().position(|&b| !matches!(b, b' ' | b'\t')).map(|i| &rest[i..]).unwrap_or(&[]);
+            if rt.is_empty() || matches!(rt[0], b';' | b',') {
+                let total = if pos < input.len() { pos + 1 } else { pos };
+                return Ok((&input[total..], &input[..total]));
+            }
+        }
+        if pos < input.len() { pos += 1; }
+    }
+    Ok((&input[input.len()..], input))
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch helpers
 // ---------------------------------------------------------------------------
 
 fn try_parse_comment<'a>(input: &'a [u8], style: CommentStyle) -> IResult<&'a [u8], &'a [u8]> {
     match style {
-        CLineComment  => parse_c_line_comment(input),
-        CBlockComment => parse_c_block_comment(input),
-        Hash          => parse_hash_comment(input),
-        DoubleDash    => parse_double_dash_comment(input),
-        HaskellBlock  => parse_haskell_block_comment(input),
-        OcamlBlock    => parse_ocaml_block_comment(input),
-        HtmlBlock     => parse_html_comment(input),
-        Semicolon     => parse_semicolon_comment(input),
-        Percent       => parse_percent_comment(input),
+        CLineComment    => parse_c_line_comment(input),
+        CBlockComment   => parse_c_block_comment(input),
+        Hash            => parse_hash_comment(input),
+        DoubleDash      => parse_double_dash_comment(input),
+        HaskellBlock    => parse_haskell_block_comment(input),
+        OcamlBlock      => parse_ocaml_block_comment(input),
+        HtmlBlock       => parse_html_comment(input),
+        Semicolon       => parse_semicolon_comment(input),
+        Percent         => parse_percent_comment(input),
+        VimLineComment  => parse_vim_line_comment(input),
     }
 }
 
 fn try_parse_string<'a>(input: &'a [u8], style: StringStyle) -> IResult<&'a [u8], &'a [u8]> {
     match style {
-        Double          => parse_double_string(input),
-        Single          => parse_single_string(input),
-        Backtick        => parse_backtick_string(input),
-        TripleDouble    => parse_triple_double(input),
-        TripleSingle    => parse_triple_single(input),
-        PythonRawDouble => parse_python_raw_double(input),
-        PythonRawSingle => parse_python_raw_single(input),
-        RustRaw         => parse_rust_raw_string(input),
+        Double              => parse_double_string(input),
+        Single              => parse_single_string(input),
+        Backtick            => parse_backtick_string(input),
+        TripleDouble        => parse_triple_double(input),
+        TripleSingle        => parse_triple_single(input),
+        PythonRawDouble     => parse_python_raw_double(input),
+        PythonRawSingle     => parse_python_raw_single(input),
+        RustRaw             => parse_rust_raw_string(input),
+        LuaLongString       => parse_lua_long_string(input),
+        ElixirSigil         => parse_elixir_sigil(input),
+        RubyPercentLiteral  => parse_ruby_percent_literal(input),
+        SqlDollar           => parse_sql_dollar_quote(input),
+        Heredoc             => parse_heredoc(input),
     }
 }
 
@@ -870,5 +1109,199 @@ mod tests {
     fn unknown_extension_passthrough() {
         let input = "{ [ ( ) ] } // not stripped # not stripped";
         assert_eq!(san(input, "xyz"), input);
+    }
+
+    // =========================================================
+    // GAP TESTS — written RED first
+    // =========================================================
+
+    // -- GraphQL: # comment + """ SDL docstring ---------------------------
+
+    #[test]
+    fn graphql_hash_comment_stripped() {
+        // # is the comment char; currently mapped to SQL_STYLE (DoubleDash) — FAILS
+        let r = san("# { not a brace }\ntype Query { id: ID }", "graphql");
+        assert_eq!(r.chars().filter(|c| *c == '{').count(), 1);
+    }
+
+    #[test]
+    fn graphql_triple_docstring_stripped() {
+        // SDL uses \"\"\" for field descriptions — currently not stripped — FAILS
+        let r = san("\"\"\"{ [ description }\"\"\"\ntype Foo { id: ID }", "graphql");
+        assert_eq!(r.chars().filter(|c| *c == '{').count(), 1);
+    }
+
+    // -- Vim: " is a line comment, NOT a string opener ----------------------
+
+    #[test]
+    fn vim_line_comment_stripped() {
+        // " starts a comment in Vim; currently no comment style defined — FAILS
+        let r = san("call foo() \" { not a brace\nlet y = 1", "vim");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn vim_comment_doesnt_eat_real_braces() {
+        // Without fix, " opens a "string" that eats {} on next line — FAILS
+        let r = san("\" { comment\nlet x = {}", "vim");
+        assert!(r.contains("{}"));
+    }
+
+    // -- Swift: \"\"\"...\"\"\" multiline strings -----------------------------------
+
+    #[test]
+    fn swift_triple_string_stripped() {
+        // Swift supports \"\"\"...\"\"\"; currently only C_STYLE (no triple) — FAILS
+        let r = san("let s = \"\"\"\n{ [ ( not braces\n\"\"\"\nlet y = 1", "swift");
+        assert!(!r.contains('{'));
+    }
+
+    // -- Lua: --[[...]] block comments and [[...]] long strings ---------------
+
+    #[test]
+    fn lua_block_comment_basic() {
+        // --[[ ... ]] not currently handled (only DoubleDash line) — FAILS
+        let r = san("--[[ { [ ( not braces ]]", "lua");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn lua_block_comment_levels() {
+        let r = san("--[==[ { [ ( not braces ]==]", "lua");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn lua_long_string_basic() {
+        let r = san("local s = [[ { [ ( not braces ]]", "lua");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn lua_long_string_levels() {
+        let r = san("local s = [==[ { [ not braces ]==]", "lua");
+        assert!(!r.contains('{'));
+    }
+
+    // -- Nested Haskell {- {- -} -} block comments --------------------------
+
+    #[test]
+    fn haskell_nested_block_comment() {
+        // take_until "-}" terminates at first -} leaving outer comment open — FAILS
+        let r = san("x = {- outer {- inner { } -} still outer {} -} 1", "hs");
+        assert!(!r.contains('{'));
+    }
+
+    // -- Nested OCaml (* (* *) *) block comments ----------------------------
+
+    #[test]
+    fn ocaml_nested_block_comment() {
+        let r = san("let x = (* outer (* inner { } *) still outer {} *) 1", "ml");
+        assert!(!r.contains('{'));
+    }
+
+    // -- PowerShell @"..."@ and @'...'@ here-strings -------------------------
+
+    #[test]
+    fn powershell_here_string_double() {
+        // @"...\n"@ not currently parsed — FAILS
+        let r = san("$x = @\"\n{ [ ( not braces\n\"@\n$y = 1", "ps1");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn powershell_here_string_single() {
+        let r = san("$x = @'\n{ [ ( not braces\n'@\n$y = 1", "ps1");
+        assert!(!r.contains('{'));
+    }
+
+    // -- Ruby % literals ----------------------------------------------------
+
+    #[test]
+    fn ruby_percent_q_curly() {
+        // %q{...} — not parsed — FAILS
+        let r = san("s = %q{ { [ ( not braces } }", "rb");
+        assert!(!r.contains('['));
+    }
+
+    #[test]
+    fn ruby_percent_q_square() {
+        let r = san("s = %q[ { [ ( not braces ] ]", "rb");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn ruby_percent_w_array() {
+        let r = san("a = %w[ { [ ( not braces ]", "rb");
+        assert!(!r.contains('{'));
+    }
+
+    // -- Elixir sigils -------------------------------------------------------
+
+    #[test]
+    fn elixir_sigil_s_double() {
+        // ~s"..." — not parsed — FAILS
+        let r = san("x = ~s\"{ [ ( not braces }\"", "ex");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn elixir_sigil_s_triple() {
+        let r = san("x = ~S\"\"\"\n{ [ ( not braces\n\"\"\"", "ex");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn elixir_sigil_r_slash() {
+        let r = san("x = ~r/{ [ ( not braces }/", "ex");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn elixir_sigil_w_curly() {
+        let r = san("x = ~w{ word1 { word2 }", "ex");
+        assert!(!r.contains('{'));
+    }
+
+    // -- SQL $$ dollar-quoting -----------------------------------------------
+
+    #[test]
+    fn sql_dollar_quoting_anonymous() {
+        // $$ ... $$ — not parsed — FAILS
+        let r = san("$$ { [ ( not braces } $$", "sql");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn sql_dollar_quoting_tagged() {
+        let r = san("$body$ { [ ( not braces $body$", "sql");
+        assert!(!r.contains('{'));
+    }
+
+    // -- Heredocs -----------------------------------------------------------
+
+    #[test]
+    fn ruby_heredoc_squiggly() {
+        let r = san("x = <<~HEREDOC\n  { [ ( not braces\nHEREDOC\ny = 1", "rb");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn bash_heredoc_basic() {
+        let r = san("cat <<EOF\n{ [ ( not braces\nEOF\nexit 0", "sh");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn bash_heredoc_quoted() {
+        // <<'EOF' is unexpanded (no var substitution) - still needs stripping
+        let r = san("cat <<'EOF'\n{ [ ( not braces\nEOF\n", "sh");
+        assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn php_heredoc() {
+        let r = san("$x = <<<EOT\n{ [ ( not braces\nEOT;\n", "php");
+        assert!(!r.contains('{'));
     }
 }
