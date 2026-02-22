@@ -10,7 +10,7 @@ It tells you exactly which line has the problem, what was opened but never close
 - Detects unclosed openers (e.g. `{` that has no matching `}`)
 - Detects extra closers with no matching opener
 - Reports the **fix** — lists exactly which closing characters to append and in what order
-- Supports **any file type** — language-agnostic, works on `.py`, `.rs`, `.ts`, `.tsx`, `.js`, `.jsx`, `.json`, `.c`, `.go`, or anything else
+- **Language-aware sanitizer** — strips comments and string literals before checking, so brackets inside strings/comments are never false-positives (see [Sanitizer](#language-aware-sanitizer) below)
 - Supports **custom pairs** via `-p`
 - Check **multiple files or directories** at once with a summary
 - **MCP server** — expose all checks as tools to any MCP client (Claude Desktop, Cursor, etc.)
@@ -124,6 +124,35 @@ Failed files: 2
   - src/broken_b.json
 ```
 
+## Language-aware sanitizer
+
+For recognised file extensions, bracebalance strips comments and string literals from the source text before counting brackets. This prevents false positives from brackets that appear inside strings or comments.
+
+| Language(s) | What is stripped |
+|---|---|
+| TypeScript / JavaScript / Vue / Svelte | `//` line, `/* */` block, `""` `''` `` `` `` strings |
+| C / C++ / C# / Java / Go / Dart / Proto | `//` line, `/* */` block, `""` strings |
+| Swift | `//` line, `/* */` block (nested), `"""` `""` `''` strings |
+| Kotlin / Scala / Groovy | `//` line, `/* */` block, `"""` `""` `''` strings |
+| Rust | `//` line, `/* */` block, raw `r#"..."#` strings |
+| Python | `#` comment, `"""` `'''` triple-quoted, `r""` raw strings |
+| Ruby | `#` comment, `"""` `""` `''` strings, `%q{}`/`%w[]` percent literals (nested), `<<~HEREDOC` heredocs |
+| Shell / Bash / Zsh / Fish | `#` comment, `<<HEREDOC` heredocs, `""` `''` strings |
+| PHP | `//` `#` `/* */` comments, `<<<EOT` heredocs |
+| Elixir | `#` comment, `~r/.../` `~w{...}` sigils, `"""` `""` strings |
+| Lua | `--` line, `--[[` block comments, `[[` long strings |
+| SQL | `--` line comments, `$$`/`$tag$` dollar-quoting |
+| GraphQL | `#` comment, `"""` doc-strings, `""` strings |
+| Haskell | `--` line, `{- nested -}` block comments |
+| OCaml / F# | `(* nested *)` block comments |
+| Erlang | `%` line comments |
+| Clojure | `;` line comments |
+| Vim script | `"` line comments |
+| HTML / XML | `<!-- -->` comments |
+| TOML / YAML / R / etc. | `#` line comments |
+
+For unsupported extensions the raw text is checked as-is (no sanitisation).
+
 ## Installation
 
 ### From source
@@ -230,15 +259,16 @@ subscriber.
 
 ## Running Tests
 
-The `test_artifacts/` directory contains 21 deeply nested test files across 7 languages — 14 valid and 7 intentionally broken.
+The `test_artifacts/` directory contains **51 deeply nested test files** across **16 languages** — 29 valid and 22 intentionally broken. They cover all sanitizer edge cases: nested comments, percent literals, heredocs, dollar-quoting, sigils, CRLF line endings, and more.
 
 ```sh
 cargo test
 ```
 
 ```
-test result: ok. 4 passed  (integration — file + dir scans)
-test result: ok. 20 passed (library unit tests)
+test result: ok. 61 passed  (sanitizer unit tests)
+test result: ok.  4 passed  (integration — file + dir scans)
+test result: ok. 20 passed  (library unit tests)
 ```
 
 ## Examples
