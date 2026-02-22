@@ -1,0 +1,97 @@
+{
+    "pipeline": {
+        "stages": [
+            {
+                "name": "extract",
+                "config": {
+                    "sources": [
+                        {
+                            "type": "database",
+                            "connection": {
+                                "params": {
+                                    "host": "db.example.com",
+                                    "options": {
+                                        "ssl": {
+                                            "certs": [
+                                                {"path": "/certs/ca.pem", "type": "CA"},
+                                                {"path": "/certs/client.pem", "type": "client"}
+                                            ],
+                                            "settings": {
+                                                "versions": ["TLSv1.2", "TLSv1.3"],
+                                                "ciphers": [
+                                                    {
+                                                        "name": "AES256",
+                                                        "params": {
+                                                            "keySize": [128, 256],
+                                                            "modes": ["CBC", "GCM"
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "type": "api",
+                            "endpoints": [
+                                {
+                                    "url": "/api/v1/data",
+                                    "headers": {
+                                        "auth": {
+                                            "tokens": [
+                                                {"type": "bearer", "scope": ["read", "write"]},
+                                                {"type": "api-key", "scope": ["read"]}
+                                            ]
+                                        }
+                                    },
+                                    "transforms": [
+                                        {
+                                            "type": "map",
+                                            "config": {
+                                                "fields": {
+                                                    "nested": {
+                                                        "deep": {
+                                                            "values": [
+                                                                [1, [2, [3, [4, 5]]]],
+                                                                [6, [7, [8]]
+                                                            ]
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "transform",
+                "steps": [
+                    {
+                        "operation": "aggregate",
+                        "params": {
+                            "groupBy": ["region", "category"],
+                            "metrics": [
+                                {
+                                    "name": "total",
+                                    "formula": {
+                                        "operands": [
+                                            {"field": "amount", "transform": ["abs", "round"]},
+                                            {"constant": 1.5}
+                                        ],
+                                        "operator": "multiply"
+                                    }
+                                }
+                            
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+}

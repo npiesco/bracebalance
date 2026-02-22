@@ -1,0 +1,106 @@
+{
+    "database": {
+        "connections": [
+            {
+                "primary": {
+                    "host": "localhost",
+                    "port": 5432,
+                    "options": {
+                        "pool": {
+                            "min": [2, 4],
+                            "max": [10, 20],
+                            "settings": [
+                                {
+                                    "timeout": [30, [60, 90]],
+                                    "retry": {
+                                        "attempts": [1, 2, 3],
+                                        "backoff": {
+                                            "type": "exponential",
+                                            "params": {
+                                                "base": [100, 200],
+                                                "multiplier": [1.5, 2.0],
+                                                "jitter": {
+                                                    "range": [0.1, 0.5],
+                                                    "distribution": "uniform"
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                {
+                                    "timeout": [10, [20, 30]],
+                                    "retry": {
+                                        "attempts": [4, 5, 6],
+                                        "backoff": {
+                                            "type": "linear",
+                                            "params": {
+                                                "base": [50, 100],
+                                                "increment": [10, 20]
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                },
+                "replicas": [
+                    {
+                        "host": "replica1",
+                        "weights": {
+                            "read": [1, 2, 3],
+                            "write": [0, 0, 0],
+                            "computed": {
+                                "scores": [
+                                    [10, [20, [30, [40, 50]]]],
+                                    [60, [70, [80]]]
+                                ]
+                            }
+                        }
+                    },
+                    {
+                        "host": "replica2",
+                        "weights": {
+                            "read": [4, 5, 6],
+                            "write": [1, 1, 1],
+                            "computed": {
+                                "scores": [
+                                    [100, [200, [300]]],
+                                    [400, [500]]
+                                ]
+                            }
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    "cache": {
+        "layers": [
+            {
+                "name": "L1",
+                "config": {
+                    "size": [1024, [2048, {"unit": "KB"}]],
+                    "eviction": {
+                        "policy": "LRU",
+                        "params": {
+                            "threshold": [0.75, [0.85, {"adaptive": true}]]
+                        }
+                    }
+                }
+            },
+            {
+                "name": "L2",
+                "config": {
+                    "size": [4096, [8192, {"unit": "MB"}]],
+                    "eviction": {
+                        "policy": "LFU",
+                        "params": {
+                            "threshold": [0.90, [0.95, {"adaptive": false}]]
+                        }
+                    }
+                }
+            }
+        ]
+    }
+}

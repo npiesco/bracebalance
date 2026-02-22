@@ -1,0 +1,98 @@
+{
+    "schema": {
+        "entities": {
+            "User": {
+                "fields": {
+                    "profile": {
+                        "type": "object",
+                        "properties": {
+                            "addresses": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "coordinates": {
+                                            "type": "tuple",
+                                            "items": [
+                                                {"type": "number"},
+                                                {"type": "number"}
+                                            ]
+                                        },
+                                        "metadata": {
+                                            "type": "object",
+                                            "properties": {
+                                                "tags": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "name": {"type": "string"},
+                                                            "attributes": {
+                                                                "type": "array",
+                                                                "items": [
+                                                                    {"key": {"type": "string"}},
+                                                                    {"value": {
+                                                                        "oneOf": [
+                                                                            {"type": "string"},
+                                                                            {"type": "number"},
+                                                                            {
+                                                                                "type": "object",
+                                                                                "properties": {
+                                                                                    "nested": {
+                                                                                        "type": "array",
+                                                                                        "items": [
+                                                                                            {"type": "number"},
+                                                                                            {
+                                                                                                "type": "array",
+                                                                                                "items": [
+                                                                                                    {"type": "number"},
+                                                                                                    {"type": "number"}
+                                                                                                ]
+                                                                                            }
+                                                                                        ]
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        ]
+                                                                    }}
+                                                                ]
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "relations": {
+                    "friends": {
+                        "type": "many-to-many",
+                        "through": {
+                            "table": "friendships",
+                            "columns": {
+                                "source": {
+                                    "refs": ["User", "id"],
+                                    "constraints": [
+                                        {"type": "not-null"},
+                                        {"type": "foreign-key", "params": {"onDelete": "cascade"}}
+                                    ]
+                                },
+                                "target": {
+                                    "refs": ["User", "id"],
+                                    "constraints": [
+                                        {"type": "not-null"},
+                                        {"type": "foreign-key", "params": {"onDelete": "cascade"}}
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
