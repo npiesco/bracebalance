@@ -12,7 +12,8 @@ It tells you exactly which line has the problem, what was opened but never close
 - Reports the **fix** — lists exactly which closing characters to append and in what order
 - Supports **any file type** — language-agnostic, works on `.py`, `.rs`, `.ts`, `.tsx`, `.js`, `.jsx`, `.json`, `.c`, `.go`, or anything else
 - Supports **custom pairs** via `-p`
-- Check **multiple files** at once with a summary
+- Check **multiple files or directories** at once with a summary
+- **MCP server** — expose all checks as tools to any MCP client (Claude Desktop, Cursor, etc.)
 - CI-friendly: exits `0` if all files are balanced, `1` if any have errors
 
 ## Usage
@@ -130,10 +131,11 @@ Failed files: 2
 Requires [Rust](https://rustup.rs/).
 
 ```sh
-git clone https://github.com/you/bracebalance
+git clone https://github.com/npiesco/bracebalance
 cd bracebalance
 cargo build --release
-# Binary at: target/release/bracebalance
+# CLI:        target/release/bracebalance
+# MCP server: target/release/bracebalance-mcp-server
 ```
 
 ### Add to PATH
@@ -141,9 +143,37 @@ cargo build --release
 ```sh
 # Linux / macOS
 cp target/release/bracebalance ~/.local/bin/
+cp target/release/bracebalance-mcp-server ~/.local/bin/
 
 # Windows (PowerShell)
 Copy-Item .\target\release\bracebalance.exe $env:USERPROFILE\.cargo\bin\
+Copy-Item .\target\release\bracebalance-mcp-server.exe $env:USERPROFILE\.cargo\bin\
+```
+
+## MCP Server
+
+`bracebalance-mcp-server` speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio — plug it into Claude Desktop, Cursor, or any other MCP host.
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `check_text` | Check raw source text supplied inline |
+| `check_path` | Check a single file or recursively scan a directory |
+| `check_paths` | Check multiple files/directories in one call |
+
+All three tools accept optional `pairs` (e.g. `["()", "{}"]`) and `all_pairs` (boolean) to control which pairs are checked.
+
+### Claude Desktop config
+
+```json
+{
+  "mcpServers": {
+    "bracebalance": {
+      "command": "bracebalance-mcp-server"
+    }
+  }
+}
 ```
 
 ## Running Tests
@@ -151,15 +181,12 @@ Copy-Item .\target\release\bracebalance.exe $env:USERPROFILE\.cargo\bin\
 The `test_artifacts/` directory contains 21 deeply nested test files across 7 languages — 14 valid and 7 intentionally broken.
 
 ```sh
-powershell -ExecutionPolicy Bypass -File test_artifacts/run_all.ps1
+cargo test
 ```
 
 ```
-Total : 21
-Pass  : 21
-Fail  : 0
-
-ALL TESTS PASSED
+test result: ok. 4 passed  (integration — file + dir scans)
+test result: ok. 20 passed (library unit tests)
 ```
 
 ## Examples
