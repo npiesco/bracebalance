@@ -171,6 +171,8 @@ pub struct BalanceResult {
     pub pair_labels: String,
     pub mismatches: Vec<BalanceMismatch>,
     pub unclosed: Vec<UnclosedOpener>,
+    /// Number of extra closer messages suppressed because unclosed openers were present.
+    pub suppressed_extra_closers: usize,
     /// Ordered string of characters that need to be appended to fix the file.
     pub fix_suggestion: Option<String>,
 }
@@ -213,17 +215,44 @@ pub fn check_balance_str_ext(
     let open_chars: HashMap<char, char> = pairs.iter().map(|&(o, c)| (o, c)).collect();
     let close_to_open: HashMap<char, char> = pairs.iter().map(|&(o, c)| (c, o)).collect();
 
+    fn opener_line_context(
+        original_lines: &[&str],
+        line_idx: usize,
+        line_text: &str,
+        opener: char,
+    ) -> String {
+        let trimmed = line_text.trim();
+        if trimmed == opener.to_string() {
+            if let Some(prev_nonblank) = original_lines[..line_idx]
+                .iter()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+            {
+                return format!("{}  {}", prev_nonblank.trim_end(), line_text);
+            }
+        }
+        line_text.to_string()
+    }
+
     struct StackEntry {
         ch: char,
         line_num: usize,
         line_text: String,
+        seq: usize,
+    }
+
+    struct UnclosedForFix {
+        entry: UnclosedOpener,
+        seq: usize,
     }
 
     let mut open_stack: Vec<StackEntry> = Vec::new();
     let mut mismatches: Vec<BalanceMismatch> = Vec::new();
+    let mut extra_closer_mismatches: Vec<BalanceMismatch> = Vec::new();
     // Openers drained from the stack by the skip-forward recovery strategy.
     // They were never explicitly closed, so they appear in the final unclosed list.
-    let mut orphaned_unclosed: Vec<UnclosedOpener> = Vec::new();
+    let mut orphaned_unclosed: Vec<UnclosedForFix> = Vec::new();
+    let mut push_seq: usize = 0;
 
     // Iterate over sanitized text for brace logic, but use original
     // content for line_text in error messages.
@@ -240,10 +269,17 @@ pub fn check_balance_str_ext(
 
         for ch in line.chars() {
             if open_chars.contains_key(&ch) {
+                push_seq += 1;
                 open_stack.push(StackEntry {
                     ch,
                     line_num,
-                    line_text: line_text.clone(),
+                    line_text: opener_line_context(
+                        &original_lines,
+                        line_idx,
+                        &line_text,
+                        ch,
+                    ),
+                    seq: push_seq,
                 });
             } else if let Some(&expected_open) = close_to_open.get(&ch) {
                 // Skip-forward recovery: search the entire stack for the matching opener.
@@ -256,11 +292,14 @@ pub fn check_balance_str_ext(
                     // Drain entries above the match into orphaned_unclosed.
                     let drained: Vec<StackEntry> = open_stack.drain((pos + 1)..).collect();
                     for entry in drained {
-                        orphaned_unclosed.push(UnclosedOpener {
-                            line_num: entry.line_num,
-                            line_text: entry.line_text,
-                            ch: entry.ch,
-                            needs: open_chars[&entry.ch],
+                        orphaned_unclosed.push(UnclosedForFix {
+                            entry: UnclosedOpener {
+                                line_num: entry.line_num,
+                                line_text: entry.line_text,
+                                ch: entry.ch,
+                                needs: open_chars[&entry.ch],
+                            },
+                            seq: entry.seq,
                         });
                     }
                     // Pop the match (now at the top after the drain).
@@ -268,7 +307,7 @@ pub fn check_balance_str_ext(
                 } else {
                     // No matching opener anywhere — genuinely extra closer.
                     // Do NOT pop: the current top may still close a future match.
-                    mismatches.push(BalanceMismatch {
+                    extra_closer_mismatches.push(BalanceMismatch {
                         line_num,
                         line_text: line_text.clone(),
                         message: format!(
@@ -281,25 +320,59 @@ pub fn check_balance_str_ext(
         }
     }
 
-    // Merge remaining open_stack with orphaned_unclosed, sorted by source line so the
-    // output is readable and the fix suggestion closes them in the right order.
-    let mut unclosed: Vec<UnclosedOpener> = open_stack
+    // Merge remaining open_stack with orphaned_unclosed.
+    let mut unclosed_for_fix: Vec<UnclosedForFix> = open_stack
         .iter()
-        .map(|e| UnclosedOpener {
-            line_num: e.line_num,
-            line_text: e.line_text.clone(),
-            ch: e.ch,
-            needs: open_chars[&e.ch],
+        .map(|e| UnclosedForFix {
+            entry: UnclosedOpener {
+                line_num: e.line_num,
+                line_text: e.line_text.clone(),
+                ch: e.ch,
+                needs: open_chars[&e.ch],
+            },
+            seq: e.seq,
         })
         .collect();
-    unclosed.extend(orphaned_unclosed);
+
+    // Track counts BEFORE merging — needed for fix_suggestion reliability guard.
+    let orphaned_count = orphaned_unclosed.len();
+    let extra_closer_count = extra_closer_mismatches.len();
+
+    unclosed_for_fix.extend(orphaned_unclosed);
+
+    // Suppress pure extra-closer noise when we already have unclosed openers.
+    // This keeps reports focused on primary root causes.
+    let suppressed_extra_closers = if unclosed_for_fix.is_empty() {
+        mismatches.extend(extra_closer_mismatches);
+        0
+    } else {
+        extra_closer_mismatches.len()
+    };
+
+    // Public unclosed list: line-ordered for readability.
+    let mut unclosed: Vec<UnclosedOpener> = unclosed_for_fix
+        .iter()
+        .map(|u| u.entry.clone())
+        .collect();
     unclosed.sort_by_key(|u| u.line_num);
 
-    // Fix suggestion: closers in reverse line order (innermost-last opened = first closed).
-    let fix_suggestion = if unclosed.is_empty() {
+    // Fix suggestion: ONLY emit an append-fix when it's guaranteed to work.
+    // Appending closers is correct when ALL unclosed openers are from the
+    // regular stack (no skip-forward orphaning) AND there are no extra closers
+    // in the file body.  When orphaned openers or extra closers exist, the
+    // interleaving is too complex for a simple append — require manual fix.
+    let fix_suggestion = if unclosed.is_empty()
+        || orphaned_count > 0
+        || extra_closer_count > 0
+    {
         None
     } else {
-        let closers: String = unclosed.iter().rev().map(|u| u.needs).collect();
+        unclosed_for_fix.sort_by_key(|u| u.seq);
+        let closers: String = unclosed_for_fix
+            .iter()
+            .rev()
+            .map(|u| u.entry.needs)
+            .collect();
         Some(closers)
     };
 
@@ -310,6 +383,7 @@ pub fn check_balance_str_ext(
         pair_labels,
         mismatches,
         unclosed,
+        suppressed_extra_closers,
         fix_suggestion,
     }
 }
@@ -357,7 +431,16 @@ pub fn format_report(label: &str, result: &BalanceResult) -> String {
         }
         if let Some(fix) = &result.fix_suggestion {
             out.push_str(&format!("\n>>> FIX: Add closing char(s): {fix} <<<\n"));
+        } else {
+            out.push_str("\n[NOTE] Interleaved / mismatched brackets detected — manual fix required.\n");
         }
+    }
+
+    if result.suppressed_extra_closers > 0 {
+        out.push_str(&format!(
+            "\n[INFO] Suppressed {} extra closer message(s) to focus on unclosed openers.\n",
+            result.suppressed_extra_closers
+        ));
     }
 
     if result.is_balanced {
