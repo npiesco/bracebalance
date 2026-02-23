@@ -1,0 +1,59 @@
+// SCSS valid nested brackets
+// Tests: nested rules, variables, mixins, block comments with decoys
+
+/* Comment decoy: { all [these] (brackets) are } ignored */
+
+$primary:  #3498db;
+$spacing:  8px;
+$breakpoint-md: 768px;
+
+@mixin flex-center($direction: row) {
+    display: flex;
+    flex-direction: $direction;
+    align-items: center;
+    justify-content: center;
+}
+
+@mixin respond-to($bp) {
+    @media (max-width: $bp) {
+        @content;
+    }
+}
+
+.card {
+    padding: $spacing * 2;
+    border-radius: 4px;
+
+    &__header {
+        @include flex-center(row);
+        gap: $spacing;
+    }
+
+    &__body {
+        padding: $spacing;
+
+        p {
+            margin: 0 0 $spacing;
+
+            &:last-child {
+                margin-bottom: 0;
+            }
+        }
+    }
+
+    &--active {
+        border: 2px solid $primary;
+
+        .card__header {
+            background: lighten($primary, 40%);
+        }
+    }
+
+    @include respond-to($breakpoint-md) {
+        padding: $spacing;
+
+        &__header {
+            flex-direction: column;
+        }
+    }
+}

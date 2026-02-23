@@ -1,0 +1,29 @@
+/* CSS broken nested brackets
+   Block comment decoy: { [ ( ignored ) ] } */
+
+:root {
+    --primary: #e74c3c;
+    --gap: 16px;
+}
+
+/* Another decoy comment { with braces } and [brackets] */
+
+.layout {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--gap);
+
+    /* <-- missing } for .layout rule */
+
+@media (max-width: 768px) {
+    .layout {
+        grid-template-columns: 1fr;
+    }
+
+    /* <-- missing } for @media block */
+
+@supports (display: grid) {
+    .enhanced {
+        gap: calc(var(--gap) * 1.5);
+    }
+}

@@ -1,0 +1,45 @@
+// SCSS broken nested brackets
+// Block comment decoy: { [ ( ignored ) ] }
+
+$primary: #e74c3c;
+$gap:     12px;
+
+@mixin respond-to($bp) {
+    @media (max-width: $bp) {
+        @content;
+    }
+}
+
+.dashboard {
+    display: grid;
+    gap: $gap;
+
+    &__sidebar {
+        width: 240px;
+
+        nav {
+            ul {
+                list-style: none;
+
+                li {
+                    padding: $gap * 0.5;
+
+                    a {
+                        color: $primary;
+
+                        &:hover {
+                            text-decoration: underline;
+
+                            // <-- missing } for &:hover
+
+                        // <-- missing } for a
+
+                    // <-- missing } for li
+
+                // <-- missing } for ul
+
+            // <-- missing } for nav
+
+        // <-- missing } for &__sidebar
+
+    // <-- missing } for .dashboard

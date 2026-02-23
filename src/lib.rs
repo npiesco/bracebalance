@@ -221,6 +221,9 @@ pub fn check_balance_str_ext(
 
     let mut open_stack: Vec<StackEntry> = Vec::new();
     let mut mismatches: Vec<BalanceMismatch> = Vec::new();
+    // Openers drained from the stack by the skip-forward recovery strategy.
+    // They were never explicitly closed, so they appear in the final unclosed list.
+    let mut orphaned_unclosed: Vec<UnclosedOpener> = Vec::new();
 
     // Iterate over sanitized text for brace logic, but use original
     // content for line_text in error messages.
@@ -243,23 +246,28 @@ pub fn check_balance_str_ext(
                     line_text: line_text.clone(),
                 });
             } else if let Some(&expected_open) = close_to_open.get(&ch) {
-                if let Some(top) = open_stack.last() {
-                    if top.ch == expected_open {
-                        open_stack.pop();
-                    } else if open_chars.contains_key(&top.ch) {
-                        mismatches.push(BalanceMismatch {
-                            line_num,
-                            line_text: line_text.clone(),
-                            message: format!(
-                                "'{}' at line {} does not match '{}' opened at line {}",
-                                ch, line_num, top.ch, top.line_num
-                            ),
+                // Skip-forward recovery: search the entire stack for the matching opener.
+                // If found at position `pos`, every entry above `pos` is an "orphaned"
+                // opener (never explicitly closed) — drain them into orphaned_unclosed so
+                // they appear in the output, then silently pop the match.
+                // If NOT found, report this as a genuine extra closer and leave the stack
+                // intact so the current top can still match a future closer.
+                if let Some(pos) = open_stack.iter().rposition(|e| e.ch == expected_open) {
+                    // Drain entries above the match into orphaned_unclosed.
+                    let drained: Vec<StackEntry> = open_stack.drain((pos + 1)..).collect();
+                    for entry in drained {
+                        orphaned_unclosed.push(UnclosedOpener {
+                            line_num: entry.line_num,
+                            line_text: entry.line_text,
+                            ch: entry.ch,
+                            needs: open_chars[&entry.ch],
                         });
-                        // Recovery strategy: consume the stale opener so one root mismatch
-                        // doesn't cascade into many secondary mismatches.
-                        open_stack.pop();
                     }
+                    // Pop the match (now at the top after the drain).
+                    open_stack.pop();
                 } else {
+                    // No matching opener anywhere — genuinely extra closer.
+                    // Do NOT pop: the current top may still close a future match.
                     mismatches.push(BalanceMismatch {
                         line_num,
                         line_text: line_text.clone(),
@@ -273,7 +281,9 @@ pub fn check_balance_str_ext(
         }
     }
 
-    let unclosed: Vec<UnclosedOpener> = open_stack
+    // Merge remaining open_stack with orphaned_unclosed, sorted by source line so the
+    // output is readable and the fix suggestion closes them in the right order.
+    let mut unclosed: Vec<UnclosedOpener> = open_stack
         .iter()
         .map(|e| UnclosedOpener {
             line_num: e.line_num,
@@ -282,11 +292,14 @@ pub fn check_balance_str_ext(
             needs: open_chars[&e.ch],
         })
         .collect();
+    unclosed.extend(orphaned_unclosed);
+    unclosed.sort_by_key(|u| u.line_num);
 
+    // Fix suggestion: closers in reverse line order (innermost-last opened = first closed).
     let fix_suggestion = if unclosed.is_empty() {
         None
     } else {
-        let closers: String = open_stack.iter().rev().map(|e| open_chars[&e.ch]).collect();
+        let closers: String = unclosed.iter().rev().map(|u| u.needs).collect();
         Some(closers)
     };
 
@@ -324,7 +337,7 @@ pub fn format_report(label: &str, result: &BalanceResult) -> String {
         ));
         for m in &result.mismatches {
             out.push_str(&format!("  Line {}: {}\n", m.line_num, m.message));
-            let truncated: String = m.line_text.chars().take(80).collect();
+            let truncated: String = m.line_text.chars().take(120).collect();
             out.push_str(&format!("           {truncated}\n"));
         }
     }
@@ -336,7 +349,7 @@ pub fn format_report(label: &str, result: &BalanceResult) -> String {
         ));
         out.push_str("\nThese were NEVER closed:\n");
         for u in &result.unclosed {
-            let truncated: String = u.line_text.chars().take(80).collect();
+            let truncated: String = u.line_text.chars().take(120).collect();
             out.push_str(&format!(
                 "  Line {}: '{}' (needs '{}')  {truncated}\n",
                 u.line_num, u.ch, u.needs

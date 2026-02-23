@@ -1,0 +1,56 @@
+/* CSS valid nested brackets
+   Tests: block/line comments with decoy braces, attribute selectors, values */
+
+/* This comment has {decoy} braces [and] brackets (to) ignore */
+
+:root {
+    --primary: #3498db;
+    --spacing: calc(8px * 2);
+    --font: "Helvetica Neue", Arial, sans-serif;
+}
+
+.container {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--spacing);
+}
+
+.card {
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    padding: calc(var(--spacing) * 2);
+}
+
+.card:is(.active, .focused) {
+    outline: 2px solid var(--primary);
+}
+
+@media (max-width: 768px) {
+    .container {
+        grid-template-columns: 1fr;
+    }
+
+    .card {
+        padding: var(--spacing);
+    }
+}
+
+@supports (display: grid) {
+    .layout {
+        display: grid;
+        grid-template-areas:
+            "header header"
+            "sidebar main"
+            "footer footer";
+    }
+}
+
+a[href^="https"] {
+    color: var(--primary);
+}
+
+input[type="text"],
+input[type="email"] {
+    border: 1px solid #ccc;
+    padding: 4px 8px;
+}
