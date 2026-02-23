@@ -2,11 +2,13 @@
 ///
 /// These tests exercise the core logic directly without spawning a subprocess.
 use bracebalance::{
+    build_structured_diagnostics,
     check_balance_file, check_balance_str, check_balance_str_ext,
-    collect_files, format_report,
+    collect_files, dedup_locations, format_report, format_report_expanded,
     is_supported_extension, parse_pairs, resolve_pairs,
     DEFAULT_PAIRS, ALL_PAIRS,
 };
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -428,4 +430,162 @@ fn all_broken_artifacts_fix_guarantee() {
         }
         // If fix_suggestion is None, that's fine — we don't guarantee a fix for complex cases.
     }
+}
+
+#[test]
+fn dedup_locations_aggregates_repeated_line() {
+    let r = check_balance_str("[[[[", DEFAULT_PAIRS);
+    let locations = dedup_locations(&r);
+    assert_eq!(locations.len(), 1, "single repeated line should dedupe to one location");
+    assert_eq!(locations[0].line_num, 1);
+    assert_eq!(locations[0].occurrences, 4);
+
+    let report = format_report("inline", &r);
+    assert!(report.contains("Affected locations (deduped)"));
+    assert!(report.contains("Line 1 (x4)"), "expected dedup count in report:\n{report}");
+}
+
+#[test]
+fn expanded_report_includes_suppressed_details() {
+    let r = check_balance_str("[{]}", DEFAULT_PAIRS);
+    assert!(!r.is_balanced);
+    assert!(r.suppressed_extra_closers > 0);
+
+    let concise = format_report("inline", &r);
+    assert!(!concise.contains("[TRACE] Suppressed extra closer details:"));
+
+    let expanded = format_report_expanded("inline", &r);
+    assert!(expanded.contains("[TRACE] Suppressed extra closer details:"));
+    assert!(expanded.contains("Extra '}'"), "expanded trace should include hidden extra closer detail:\n{expanded}");
+}
+
+#[test]
+fn structured_output_has_required_fields() {
+    let r = check_balance_str("[{]}", DEFAULT_PAIRS);
+    let payload = build_structured_diagnostics("inline", &r, false);
+    let value = json!(payload);
+
+    for key in [
+        "balanced",
+        "unclosed",
+        "extra_closers",
+        "suppressed_count",
+        "fix_suggestion",
+        "locations",
+    ] {
+        assert!(value.get(key).is_some(), "missing key: {key} in {value}");
+    }
+}
+
+#[test]
+fn structured_output_expanded_includes_details_and_hints() {
+    let r = check_balance_str("[{]}", DEFAULT_PAIRS);
+    let payload = build_structured_diagnostics("inline", &r, true);
+    let value = json!(payload);
+
+    assert!(value.get("extra_closer_details").and_then(|v| v.as_array()).is_some());
+    assert!(value.get("unclosed_details").and_then(|v| v.as_array()).is_some());
+    let hints = value
+        .get("ranked_repair_hints")
+        .and_then(|v| v.as_array())
+        .expect("ranked_repair_hints should be an array");
+    assert!(!hints.is_empty(), "expected ranked hints in structured output");
+}
+
+#[test]
+fn structured_output_concise_uses_empty_arrays_not_null() {
+    let r = check_balance_str("[{]}", DEFAULT_PAIRS);
+    let payload = build_structured_diagnostics("inline", &r, false);
+    let value = json!(payload);
+
+    let unclosed_details = value
+        .get("unclosed_details")
+        .and_then(|v| v.as_array())
+        .expect("unclosed_details should be an array in concise mode");
+    let extra_details = value
+        .get("extra_closer_details")
+        .and_then(|v| v.as_array())
+        .expect("extra_closer_details should be an array in concise mode");
+
+    assert!(unclosed_details.is_empty(), "concise details should be []");
+    assert!(extra_details.is_empty(), "concise details should be []");
+}
+
+#[test]
+fn structured_output_includes_primary_locations() {
+    let r = check_balance_str("[{]}\n}\n", DEFAULT_PAIRS);
+    let payload = build_structured_diagnostics("inline", &r, false);
+    let value = json!(payload);
+
+    let locations = value
+        .get("locations")
+        .and_then(|v| v.as_array())
+        .expect("locations should be an array");
+    let primary = value
+        .get("primary_locations")
+        .and_then(|v| v.as_array())
+        .expect("primary_locations should be an array");
+
+    assert!(!locations.is_empty(), "locations should not be empty");
+    assert!(!primary.is_empty(), "primary_locations should not be empty");
+    assert!(primary.len() <= locations.len(), "primary locations should be a focused subset");
+}
+
+#[test]
+fn interleaved_case_has_actionable_fallback_when_fix_is_null() {
+    let r = check_balance_str("[{]}", DEFAULT_PAIRS);
+    assert!(r.fix_suggestion.is_none(), "interleaved case should not have append fix");
+
+    let payload = build_structured_diagnostics("inline", &r, false);
+    let value = json!(payload);
+    let fallback = value
+        .get("fallback_fix_suggestion")
+        .and_then(|v| v.as_str())
+        .expect("fallback_fix_suggestion should be present for interleaved cases");
+
+    assert!(!fallback.trim().is_empty(), "fallback fix guidance should be actionable");
+    assert!(fallback.contains("line"), "fallback guidance should point to a location: {fallback}");
+}
+
+#[test]
+fn primary_locations_is_prioritized_subset_for_complex_failures() {
+    // Many locations; primary_locations should be a smaller, prioritized subset.
+    let src = "{\n(\n[\n{\n(\n[\n{\n(\n[\n{\n";
+    let r = check_balance_str(src, DEFAULT_PAIRS);
+    assert!(!r.is_balanced);
+
+    let payload = build_structured_diagnostics("inline", &r, false);
+    let value = json!(payload);
+
+    let locations = value
+        .get("locations")
+        .and_then(|v| v.as_array())
+        .expect("locations should be an array");
+    let primary = value
+        .get("primary_locations")
+        .and_then(|v| v.as_array())
+        .expect("primary_locations should be an array");
+
+    assert!(locations.len() > 6, "fixture should produce many locations");
+    assert!(
+        primary.len() < locations.len(),
+        "primary_locations should be a focused subset; got primary={} locations={}",
+        primary.len(),
+        locations.len()
+    );
+}
+
+#[test]
+fn concise_report_compacts_large_unclosed_lists() {
+    // Large unclosed set should be compacted in concise mode.
+    let src = "{\n(\n[\n{\n(\n[\n{\n(\n[\n{\n(\n[\n";
+    let r = check_balance_str(src, DEFAULT_PAIRS);
+    assert!(!r.is_balanced);
+    assert!(r.unclosed.len() > 8, "fixture should create a large unclosed list");
+
+    let report = format_report("inline", &r);
+    assert!(
+        report.contains("Showing first") || report.contains("more omitted"),
+        "concise report should compact large unclosed lists:\n{report}"
+    );
 }

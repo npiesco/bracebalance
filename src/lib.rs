@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 pub use sanitize::{sanitize, syntax_for_extension, syntax_for_path};
 
@@ -173,8 +174,35 @@ pub struct BalanceResult {
     pub unclosed: Vec<UnclosedOpener>,
     /// Number of extra closer messages suppressed because unclosed openers were present.
     pub suppressed_extra_closers: usize,
+    /// Suppressed extra-closer details (available for expanded diagnostics).
+    pub suppressed_extra_closer_details: Vec<BalanceMismatch>,
     /// Ordered string of characters that need to be appended to fix the file.
     pub fix_suggestion: Option<String>,
+}
+
+/// Deduplicated diagnostic location with occurrence count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticLocation {
+    pub line_num: usize,
+    pub line_text: String,
+    pub occurrences: usize,
+}
+
+/// Structured output payload for MCP/automation consumers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructuredDiagnostics {
+    pub label: String,
+    pub balanced: bool,
+    pub unclosed: usize,
+    pub extra_closers: usize,
+    pub suppressed_count: usize,
+    pub fix_suggestion: Option<String>,
+    pub fallback_fix_suggestion: Option<String>,
+    pub locations: Vec<DiagnosticLocation>,
+    pub primary_locations: Vec<DiagnosticLocation>,
+    pub ranked_repair_hints: Vec<String>,
+    pub unclosed_details: Vec<UnclosedOpener>,
+    pub extra_closer_details: Vec<BalanceMismatch>,
 }
 
 /// Pure algorithm — no I/O. Takes text content and pair tuples, returns structured result.
@@ -342,11 +370,17 @@ pub fn check_balance_str_ext(
 
     // Suppress pure extra-closer noise when we already have unclosed openers.
     // This keeps reports focused on primary root causes.
+    let suppressed_extra_closer_details = if unclosed_for_fix.is_empty() {
+        Vec::new()
+    } else {
+        extra_closer_mismatches.clone()
+    };
+
     let suppressed_extra_closers = if unclosed_for_fix.is_empty() {
         mismatches.extend(extra_closer_mismatches);
         0
     } else {
-        extra_closer_mismatches.len()
+        suppressed_extra_closer_details.len()
     };
 
     // Public unclosed list: line-ordered for readability.
@@ -384,8 +418,221 @@ pub fn check_balance_str_ext(
         mismatches,
         unclosed,
         suppressed_extra_closers,
+        suppressed_extra_closer_details,
         fix_suggestion,
     }
+}
+
+fn is_extra_closer_message(message: &str) -> bool {
+    message.starts_with("Extra '")
+}
+
+pub fn dedup_locations(result: &BalanceResult) -> Vec<DiagnosticLocation> {
+    dedup_locations_with_suppressed(result, false)
+}
+
+pub fn dedup_primary_locations(result: &BalanceResult) -> Vec<DiagnosticLocation> {
+    use std::collections::BTreeMap;
+
+    let mut by_location: BTreeMap<(usize, String), usize> = BTreeMap::new();
+
+    if !result.unclosed.is_empty() {
+        for u in &result.unclosed {
+            *by_location
+                .entry((u.line_num, u.line_text.clone()))
+                .or_insert(0) += 1;
+        }
+    } else {
+        for m in &result.mismatches {
+            *by_location
+                .entry((m.line_num, m.line_text.clone()))
+                .or_insert(0) += 1;
+        }
+    }
+
+    let mut locations = by_location
+        .into_iter()
+        .map(|((line_num, line_text), occurrences)| DiagnosticLocation {
+            line_num,
+            line_text,
+            occurrences,
+        })
+        .collect::<Vec<_>>();
+
+    // Prioritize highest-density and earliest lines, and cap to keep signal focused.
+    locations.sort_by(|a, b| {
+        b.occurrences
+            .cmp(&a.occurrences)
+            .then(a.line_num.cmp(&b.line_num))
+    });
+
+    const MAX_PRIMARY_LOCATIONS: usize = 5;
+    if locations.len() > MAX_PRIMARY_LOCATIONS {
+        locations.truncate(MAX_PRIMARY_LOCATIONS);
+    }
+
+    locations.sort_by_key(|l| l.line_num);
+    locations
+}
+
+pub fn fallback_fix_suggestion(result: &BalanceResult) -> Option<String> {
+    if result.is_balanced || result.fix_suggestion.is_some() {
+        return None;
+    }
+
+    let primary = dedup_primary_locations(result);
+    let start_line = primary.first().map(|l| l.line_num).unwrap_or(1);
+
+    let mut text = format!(
+        "Manual repair: start at line {start_line}, restore local nesting first, then re-run expanded diagnostics."
+    );
+    if result.suppressed_extra_closers > 0 {
+        text.push_str(&format!(
+            " Review {} suppressed extra closer(s) to remove/relocate stray closers before final balancing.",
+            result.suppressed_extra_closers
+        ));
+    }
+    Some(text)
+}
+
+fn dedup_locations_with_suppressed(
+    result: &BalanceResult,
+    include_suppressed: bool,
+) -> Vec<DiagnosticLocation> {
+    use std::collections::BTreeMap;
+
+    let mut by_location: BTreeMap<(usize, String), usize> = BTreeMap::new();
+
+    for u in &result.unclosed {
+        *by_location
+            .entry((u.line_num, u.line_text.clone()))
+            .or_insert(0) += 1;
+    }
+    for m in &result.mismatches {
+        *by_location
+            .entry((m.line_num, m.line_text.clone()))
+            .or_insert(0) += 1;
+    }
+    if include_suppressed {
+        for m in &result.suppressed_extra_closer_details {
+            *by_location
+                .entry((m.line_num, m.line_text.clone()))
+                .or_insert(0) += 1;
+        }
+    }
+
+    by_location
+        .into_iter()
+        .map(|((line_num, line_text), occurrences)| DiagnosticLocation {
+            line_num,
+            line_text,
+            occurrences,
+        })
+        .collect()
+}
+
+pub fn ranked_repair_hints(result: &BalanceResult) -> Vec<String> {
+    let mut hints: Vec<String> = Vec::new();
+
+    if result.is_balanced {
+        hints.push("No action needed: all selected pairs are balanced.".to_string());
+        return hints;
+    }
+
+    if let Some(fix) = &result.fix_suggestion {
+        hints.push(format!(
+            "Append the suggested closers at EOF: {fix}"
+        ));
+    } else if !result.unclosed.is_empty() {
+        hints.push(
+            "Resolve interleaved/mismatched nesting around the first affected location before appending closers."
+                .to_string(),
+        );
+    }
+
+    if result.suppressed_extra_closers > 0 {
+        hints.push(
+            "Inspect suppressed extra closers in expanded diagnostics to identify early stray closers."
+                .to_string(),
+        );
+    }
+
+    let locations = dedup_primary_locations(result);
+    if let Some(first) = locations.first() {
+        hints.push(format!(
+            "Start triage at line {} and fix from top-to-bottom to reduce cascade effects.",
+            first.line_num
+        ));
+    }
+
+    hints
+}
+
+pub fn build_structured_diagnostics(
+    label: &str,
+    result: &BalanceResult,
+    expanded: bool,
+) -> StructuredDiagnostics {
+    let mut extra_closer_details = result
+        .mismatches
+        .iter()
+        .filter(|m| is_extra_closer_message(&m.message))
+        .cloned()
+        .collect::<Vec<_>>();
+    extra_closer_details.extend(result.suppressed_extra_closer_details.clone());
+
+    StructuredDiagnostics {
+        label: label.to_string(),
+        balanced: result.is_balanced,
+        unclosed: result.unclosed.len(),
+        extra_closers: extra_closer_details.len(),
+        suppressed_count: result.suppressed_extra_closers,
+        fix_suggestion: result.fix_suggestion.clone(),
+        fallback_fix_suggestion: fallback_fix_suggestion(result),
+        locations: dedup_locations_with_suppressed(result, expanded),
+        primary_locations: dedup_primary_locations(result),
+        ranked_repair_hints: ranked_repair_hints(result),
+        unclosed_details: if expanded {
+            result.unclosed.clone()
+        } else {
+            Vec::new()
+        },
+        extra_closer_details: if expanded {
+            extra_closer_details
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+pub fn format_report_expanded(label: &str, result: &BalanceResult) -> String {
+    let mut out = format_report(label, result);
+
+    if result.suppressed_extra_closers > 0 {
+        out.push_str("\n[TRACE] Suppressed extra closer details:\n");
+        for m in &result.suppressed_extra_closer_details {
+            let truncated: String = m.line_text.chars().take(120).collect();
+            out.push_str(&format!(
+                "  Line {}: {}\n           {}\n",
+                m.line_num, m.message, truncated
+            ));
+        }
+    }
+
+    let hints = ranked_repair_hints(result);
+    if !hints.is_empty() {
+        out.push_str("\n[HINTS] Ranked repair hints:\n");
+        for (idx, hint) in hints.iter().enumerate() {
+            out.push_str(&format!("  {}. {}\n", idx + 1, hint));
+        }
+    }
+
+    out
+}
+
+pub fn format_structured_json(label: &str, result: &BalanceResult, expanded: bool) -> String {
+    let payload = build_structured_diagnostics(label, result, expanded);
+    json!(payload).to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -422,17 +669,58 @@ pub fn format_report(label: &str, result: &BalanceResult) -> String {
             result.unclosed.len()
         ));
         out.push_str("\nThese were NEVER closed:\n");
-        for u in &result.unclosed {
+        const CONCISE_UNCLOSED_LIMIT: usize = 8;
+        let show_all_unclosed = result.unclosed.len() <= CONCISE_UNCLOSED_LIMIT;
+        let shown_unclosed = if show_all_unclosed {
+            result.unclosed.len()
+        } else {
+            CONCISE_UNCLOSED_LIMIT
+        };
+
+        for u in result.unclosed.iter().take(shown_unclosed) {
             let truncated: String = u.line_text.chars().take(120).collect();
             out.push_str(&format!(
                 "  Line {}: '{}' (needs '{}')  {truncated}\n",
                 u.line_num, u.ch, u.needs
             ));
         }
+
+        if !show_all_unclosed {
+            let omitted = result.unclosed.len() - shown_unclosed;
+            out.push_str(&format!(
+                "  ... {} more omitted (Showing first {})\n",
+                omitted, shown_unclosed
+            ));
+        }
+
         if let Some(fix) = &result.fix_suggestion {
             out.push_str(&format!("\n>>> FIX: Add closing char(s): {fix} <<<\n"));
         } else {
             out.push_str("\n[NOTE] Interleaved / mismatched brackets detected — manual fix required.\n");
+        }
+    }
+
+    let locations = dedup_locations(result);
+    if !locations.is_empty() {
+        out.push_str("\n[INFO] Affected locations (deduped):\n");
+        for loc in locations {
+            let truncated: String = loc.line_text.chars().take(120).collect();
+            out.push_str(&format!(
+                "  Line {} (x{}): {}\n",
+                loc.line_num, loc.occurrences, truncated
+            ));
+        }
+    }
+
+    let primary_locations = dedup_primary_locations(result);
+    if !primary_locations.is_empty() {
+        out.push_str("\n[INFO] Primary locations:\n");
+        for loc in primary_locations {
+            let truncated: String = loc.line_text.chars().take(120).collect();
+            out.push_str(&format!(
+                "  Line {} (x{}): {}\n",
+                loc.line_num, loc.occurrences, truncated
+            ));
         }
     }
 

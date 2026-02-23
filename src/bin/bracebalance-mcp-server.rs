@@ -6,9 +6,10 @@
 use std::path::PathBuf;
 
 use bracebalance::{
-    check_balance_file, check_balance_str_ext, collect_files, format_report, format_summary,
-    resolve_pairs,
+    build_structured_diagnostics, check_balance_file, check_balance_str_ext, collect_files,
+    format_report, format_report_expanded, format_summary, resolve_pairs,
 };
+use serde_json::json;
 use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::{tool::ToolRouter, wrapper::Parameters},
@@ -36,6 +37,10 @@ pub struct CheckTextParams {
     pub pairs: Option<Vec<String>>,
     /// When true, check all built-in pairs: () {} [] <>
     pub all_pairs: Option<bool>,
+    /// Output format: "text" (default) or "json".
+    pub output: Option<String>,
+    /// Diagnostics verbosity: "concise" (default) or "expanded".
+    pub diagnostics_level: Option<String>,
 }
 
 /// Parameters for checking a single file or scanning a directory.
@@ -48,6 +53,10 @@ pub struct CheckPathParams {
     pub pairs: Option<Vec<String>>,
     /// When true, check all built-in pairs: () {} [] <>
     pub all_pairs: Option<bool>,
+    /// Output format: "text" (default) or "json".
+    pub output: Option<String>,
+    /// Diagnostics verbosity: "concise" (default) or "expanded".
+    pub diagnostics_level: Option<String>,
 }
 
 /// Parameters for checking multiple files or directories.
@@ -60,6 +69,24 @@ pub struct CheckPathsParams {
     pub pairs: Option<Vec<String>>,
     /// When true, check all built-in pairs: () {} [] <>
     pub all_pairs: Option<bool>,
+    /// Output format: "text" (default) or "json".
+    pub output: Option<String>,
+    /// Diagnostics verbosity: "concise" (default) or "expanded".
+    pub diagnostics_level: Option<String>,
+}
+
+fn parse_output_mode(value: Option<&str>) -> &'static str {
+    match value.map(|v| v.to_ascii_lowercase()) {
+        Some(v) if v == "json" => "json",
+        _ => "text",
+    }
+}
+
+fn parse_expanded(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.to_ascii_lowercase()).as_deref(),
+        Some("expanded")
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -112,8 +139,16 @@ impl BraceBalanceMcp {
         };
 
         let label = p.label.as_deref().unwrap_or("<inline text>");
+        let output_mode = parse_output_mode(p.output.as_deref());
+        let expanded = parse_expanded(p.diagnostics_level.as_deref());
         let result = check_balance_str_ext(&p.text, &pairs, p.ext.as_deref());
-        format_report(label, &result)
+        if output_mode == "json" {
+            json!(build_structured_diagnostics(label, &result, expanded)).to_string()
+        } else if expanded {
+            format_report_expanded(label, &result)
+        } else {
+            format_report(label, &result)
+        }
     }
 
     /// Check that paired characters are balanced in a single file or directory.
@@ -134,9 +169,11 @@ impl BraceBalanceMcp {
             Err(e) => return format!("[ERROR] {e}"),
         };
 
+        let output_mode = parse_output_mode(p.output.as_deref());
+        let expanded = parse_expanded(p.diagnostics_level.as_deref());
         let path = PathBuf::from(&p.path);
         let files = collect_files(&[path]);
-        run_checks(&files, &pairs)
+        run_checks(&files, &pairs, output_mode, expanded)
     }
 
     /// Check that paired characters are balanced across multiple files or directories.
@@ -157,9 +194,11 @@ impl BraceBalanceMcp {
             Err(e) => return format!("[ERROR] {e}"),
         };
 
+        let output_mode = parse_output_mode(p.output.as_deref());
+        let expanded = parse_expanded(p.diagnostics_level.as_deref());
         let paths: Vec<PathBuf> = p.paths.iter().map(PathBuf::from).collect();
         let files = collect_files(&paths);
-        run_checks(&files, &pairs)
+        run_checks(&files, &pairs, output_mode, expanded)
     }
 }
 
@@ -199,40 +238,86 @@ impl ServerHandler for BraceBalanceMcp {
 // ---------------------------------------------------------------------------
 
 /// Run checks on all files, collect output, return combined report + summary.
-fn run_checks(files: &[PathBuf], pairs: &[(char, char)]) -> String {
+fn run_checks(
+    files: &[PathBuf],
+    pairs: &[(char, char)],
+    output_mode: &str,
+    expanded: bool,
+) -> String {
     let mut output = String::new();
     let mut failed_files: Vec<PathBuf> = Vec::new();
     let mut checked = 0;
+    let mut json_files = Vec::new();
 
     for filepath in files {
         if !filepath.exists() {
-            output.push_str(&format!(
-                "[WARNING] File not found: {}\n",
-                filepath.display()
-            ));
+            if output_mode == "json" {
+                json_files.push(json!({
+                    "label": filepath.display().to_string(),
+                    "error": format!("File not found: {}", filepath.display())
+                }));
+            } else {
+                output.push_str(&format!(
+                    "[WARNING] File not found: {}\n",
+                    filepath.display()
+                ));
+            }
             continue;
         }
         checked += 1;
         match check_balance_file(filepath, pairs) {
             Ok(result) => {
                 let is_ok = result.is_balanced;
-                output.push_str(&format_report(&filepath.display().to_string(), &result));
+                if output_mode == "json" {
+                    json_files.push(json!(build_structured_diagnostics(
+                        &filepath.display().to_string(),
+                        &result,
+                        expanded,
+                    )));
+                } else if expanded {
+                    output.push_str(&format_report_expanded(
+                        &filepath.display().to_string(),
+                        &result,
+                    ));
+                } else {
+                    output.push_str(&format_report(&filepath.display().to_string(), &result));
+                }
                 if !is_ok {
                     failed_files.push(filepath.clone());
                 }
             }
             Err(e) => {
-                output.push_str(&format!("[ERROR] {e}\n"));
+                if output_mode == "json" {
+                    json_files.push(json!({
+                        "label": filepath.display().to_string(),
+                        "error": e
+                    }));
+                } else {
+                    output.push_str(&format!("[ERROR] {e}\n"));
+                }
                 failed_files.push(filepath.clone());
             }
         }
     }
 
-    if files.len() > 1 {
-        output.push_str(&format_summary(checked, &failed_files));
-    }
+    if output_mode == "json" {
+        json!({
+            "checked": checked,
+            "failed": failed_files.len(),
+            "failed_files": failed_files
+                .iter()
+                .map(|f| f.display().to_string())
+                .collect::<Vec<_>>(),
+            "files": json_files,
+        })
+        .to_string()
+    } else {
+        if files.len() > 1 {
+            output.push_str(&format_summary(checked, &failed_files));
+        }
 
-    output
+        output
+    }
 }
 
 // ---------------------------------------------------------------------------
