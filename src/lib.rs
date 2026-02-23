@@ -605,8 +605,139 @@ pub fn build_structured_diagnostics(
     }
 }
 
+fn format_report_internal(
+    label: &str,
+    result: &BalanceResult,
+    compact_unclosed: bool,
+    include_suppressed_preview: bool,
+) -> String {
+    let sep = "=".repeat(80);
+    let mut out = String::new();
+
+    out.push_str(&format!("\n{sep}\n"));
+    out.push_str(&format!(
+        "File: {}  |  Checking: {}\n",
+        label, result.pair_labels
+    ));
+    out.push_str(&format!("{sep}\n"));
+
+    if !result.mismatches.is_empty() {
+        out.push_str(&format!(
+            "\n[ERROR] {} issue(s) found:\n",
+            result.mismatches.len()
+        ));
+        for m in &result.mismatches {
+            out.push_str(&format!("  Line {}: {}\n", m.line_num, m.message));
+            let truncated: String = m.line_text.chars().take(120).collect();
+            out.push_str(&format!("           {truncated}\n"));
+        }
+    }
+
+    if !result.unclosed.is_empty() {
+        out.push_str(&format!(
+            "\n[ERROR] {} UNCLOSED OPENER(S):\n",
+            result.unclosed.len()
+        ));
+        out.push_str("\nThese were NEVER closed:\n");
+        const CONCISE_UNCLOSED_LIMIT: usize = 8;
+        let shown_unclosed = if compact_unclosed {
+            result.unclosed.len().min(CONCISE_UNCLOSED_LIMIT)
+        } else {
+            result.unclosed.len()
+        };
+
+        for u in result.unclosed.iter().take(shown_unclosed) {
+            let truncated: String = u.line_text.chars().take(120).collect();
+            out.push_str(&format!(
+                "  Line {}: '{}' (needs '{}')  {truncated}\n",
+                u.line_num, u.ch, u.needs
+            ));
+        }
+
+        if compact_unclosed && shown_unclosed < result.unclosed.len() {
+            let omitted = result.unclosed.len() - shown_unclosed;
+            out.push_str(&format!(
+                "  ... {} more omitted (Showing first {})\n",
+                omitted, shown_unclosed
+            ));
+        }
+
+        if let Some(fix) = &result.fix_suggestion {
+            out.push_str(&format!("\n>>> FIX: Add closing char(s): {fix} <<<\n"));
+        } else {
+            if let Some(fallback) = fallback_fix_suggestion(result) {
+                out.push_str(&format!("\n[NOTE] {fallback}\n"));
+            } else {
+                out.push_str("\n[NOTE] Interleaved / mismatched brackets detected - manual fix required.\n");
+            }
+        }
+    }
+
+    let locations = dedup_locations(result);
+    if !locations.is_empty() {
+        out.push_str("\n[INFO] Affected locations (deduped):\n");
+        for loc in locations {
+            let truncated: String = loc.line_text.chars().take(120).collect();
+            out.push_str(&format!(
+                "  Line {} (x{}): {}\n",
+                loc.line_num, loc.occurrences, truncated
+            ));
+        }
+    }
+
+    let primary_locations = dedup_primary_locations(result);
+    if !primary_locations.is_empty() {
+        out.push_str("\n[INFO] Primary locations:\n");
+        for loc in primary_locations {
+            let truncated: String = loc.line_text.chars().take(120).collect();
+            out.push_str(&format!(
+                "  Line {} (x{}): {}\n",
+                loc.line_num, loc.occurrences, truncated
+            ));
+        }
+    }
+
+    if result.suppressed_extra_closers > 0 {
+        out.push_str(&format!(
+            "\n[INFO] Suppressed {} extra closer message(s) to focus on unclosed openers.\n",
+            result.suppressed_extra_closers
+        ));
+
+        if include_suppressed_preview {
+            let preview_limit = 2usize;
+            let preview = result
+                .suppressed_extra_closer_details
+                .iter()
+                .take(preview_limit)
+                .collect::<Vec<_>>();
+            if !preview.is_empty() {
+                out.push_str("[INFO] Suppressed detail preview:\n");
+                for m in preview {
+                    let truncated: String = m.line_text.chars().take(120).collect();
+                    out.push_str(&format!(
+                        "  Line {}: {}\n           {}\n",
+                        m.line_num, m.message, truncated
+                    ));
+                }
+                out.push_str("[INFO] Use expanded diagnostics for full suppressed detail trace.\n");
+            }
+        }
+    }
+
+    if result.is_balanced {
+        out.push_str(&format!(
+            "[OK] BALANCED: All {} pairs match!\n",
+            result.pair_labels
+        ));
+    } else {
+        out.push_str("\n[FAILED] File has balance errors!\n");
+    }
+
+    out
+}
+
 pub fn format_report_expanded(label: &str, result: &BalanceResult) -> String {
-    let mut out = format_report(label, result);
+    let mut out = format_report_internal(label, result, false, false);
 
     if result.suppressed_extra_closers > 0 {
         out.push_str("\n[TRACE] Suppressed extra closer details:\n");
@@ -641,106 +772,7 @@ pub fn format_structured_json(label: &str, result: &BalanceResult, expanded: boo
 
 /// Format a balance result as CLI-style output. Returns the formatted string.
 pub fn format_report(label: &str, result: &BalanceResult) -> String {
-    let sep = "=".repeat(80);
-    let mut out = String::new();
-
-    out.push_str(&format!("\n{sep}\n"));
-    out.push_str(&format!(
-        "File: {}  |  Checking: {}\n",
-        label, result.pair_labels
-    ));
-    out.push_str(&format!("{sep}\n"));
-
-    if !result.mismatches.is_empty() {
-        out.push_str(&format!(
-            "\n[ERROR] {} issue(s) found:\n",
-            result.mismatches.len()
-        ));
-        for m in &result.mismatches {
-            out.push_str(&format!("  Line {}: {}\n", m.line_num, m.message));
-            let truncated: String = m.line_text.chars().take(120).collect();
-            out.push_str(&format!("           {truncated}\n"));
-        }
-    }
-
-    if !result.unclosed.is_empty() {
-        out.push_str(&format!(
-            "\n[ERROR] {} UNCLOSED OPENER(S):\n",
-            result.unclosed.len()
-        ));
-        out.push_str("\nThese were NEVER closed:\n");
-        const CONCISE_UNCLOSED_LIMIT: usize = 8;
-        let show_all_unclosed = result.unclosed.len() <= CONCISE_UNCLOSED_LIMIT;
-        let shown_unclosed = if show_all_unclosed {
-            result.unclosed.len()
-        } else {
-            CONCISE_UNCLOSED_LIMIT
-        };
-
-        for u in result.unclosed.iter().take(shown_unclosed) {
-            let truncated: String = u.line_text.chars().take(120).collect();
-            out.push_str(&format!(
-                "  Line {}: '{}' (needs '{}')  {truncated}\n",
-                u.line_num, u.ch, u.needs
-            ));
-        }
-
-        if !show_all_unclosed {
-            let omitted = result.unclosed.len() - shown_unclosed;
-            out.push_str(&format!(
-                "  ... {} more omitted (Showing first {})\n",
-                omitted, shown_unclosed
-            ));
-        }
-
-        if let Some(fix) = &result.fix_suggestion {
-            out.push_str(&format!("\n>>> FIX: Add closing char(s): {fix} <<<\n"));
-        } else {
-            out.push_str("\n[NOTE] Interleaved / mismatched brackets detected — manual fix required.\n");
-        }
-    }
-
-    let locations = dedup_locations(result);
-    if !locations.is_empty() {
-        out.push_str("\n[INFO] Affected locations (deduped):\n");
-        for loc in locations {
-            let truncated: String = loc.line_text.chars().take(120).collect();
-            out.push_str(&format!(
-                "  Line {} (x{}): {}\n",
-                loc.line_num, loc.occurrences, truncated
-            ));
-        }
-    }
-
-    let primary_locations = dedup_primary_locations(result);
-    if !primary_locations.is_empty() {
-        out.push_str("\n[INFO] Primary locations:\n");
-        for loc in primary_locations {
-            let truncated: String = loc.line_text.chars().take(120).collect();
-            out.push_str(&format!(
-                "  Line {} (x{}): {}\n",
-                loc.line_num, loc.occurrences, truncated
-            ));
-        }
-    }
-
-    if result.suppressed_extra_closers > 0 {
-        out.push_str(&format!(
-            "\n[INFO] Suppressed {} extra closer message(s) to focus on unclosed openers.\n",
-            result.suppressed_extra_closers
-        ));
-    }
-
-    if result.is_balanced {
-        out.push_str(&format!(
-            "[OK] BALANCED: All {} pairs match!\n",
-            result.pair_labels
-        ));
-    } else {
-        out.push_str("\n[FAILED] File has balance errors!\n");
-    }
-
-    out
+    format_report_internal(label, result, true, true)
 }
 
 /// Format a multi-file summary.

@@ -1,213 +1,102 @@
-# bracebalance
+# BraceBalance
 
-A fast CLI tool that checks source files for unbalanced paired characters — `{}`, `()`, `[]`, and optionally `<>`.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Build Status](https://github.com/npiesco/bracebalance/actions/workflows/rust.yml/badge.svg)](https://github.com/npiesco/bracebalance/actions)
 
-It tells you exactly which line has the problem, what was opened but never closed, and what you need to add to fix it.
+A high-signal brace/bracket balance checker in Rust with a fast CLI, language-aware sanitizer, and an MCP server for editor/agent integrations.
 
 ## Features
 
-- Detects mismatched openers/closers (e.g. `[` closed by `}`)
-- Detects unclosed openers (e.g. `{` that has no matching `}`)
-- Detects extra closers with no matching opener
-- Reports the **fix** — lists exactly which closing characters to append and in what order
-- **Language-aware sanitizer** — strips comments and string literals before checking, so brackets inside strings/comments are never false-positives (see [Sanitizer](#language-aware-sanitizer) below)
-- Supports **custom pairs** via `-p`
-- Check **multiple files or directories** at once with a summary
-- **MCP server** — expose all checks as tools to any MCP client (Claude Desktop, Cursor, etc.)
-- CI-friendly: exits `0` if all files are balanced, `1` if any have errors
+- **Reliable Pair Checking**: Detects unclosed openers, extra closers, and interleaved/mismatched nesting across `()`, `{}`, `[]`, and optional `<>`.
+- **Language-Aware Sanitizer**: Strips comments and string literals before checking so bracket-like text inside literals/comments does not produce false positives.
+- **Actionable Repair Guidance**:
+  - Safe append fix when guaranteed (`fix_suggestion`)
+  - Manual fallback guidance when append fix is unsafe (`fallback_fix_suggestion`)
+- **Noise-Reduced Diagnostics**:
+  - Skip-forward mismatch recovery
+  - Deduped locations with occurrence counts
+  - Prioritized primary locations for triage
+  - Concise mode with compaction and suppressed-detail preview
+  - Expanded mode with full suppressed trace and ranked hints
+- **MCP Server**: First-class tools for `check_text`, `check_path`, and `check_paths` over stdio.
+- **Structured Output**: Optional JSON diagnostics for automation and CI pipelines.
+- **CI-Friendly Exit Codes**: Returns `0` when all checks pass and `1` when any check fails.
 
-## Usage
+## Key Dependencies
 
-```
-bracebalance [OPTIONS] <FILES|DIRS>...
-```
-
-### Basic
-
-```sh
-# Check a single file (default pairs: () {} [])
-bracebalance main.rs
-
-# Check all supported files in a directory (recursive)
-bracebalance src/
-
-# Mix files and directories
-bracebalance main.rs lib/ config.json
-
-# Check multiple files by glob
-bracebalance src/*.ts
-
-# Check all common pairs including <>
-bracebalance --all main.cpp
-
-# Check only specific pairs
-bracebalance -p "()" -p "[]" script.py
-```
-
-### Options
-
-| Flag | Description |
+| Crate | Purpose |
 |---|---|
-| `-p <AB>` | Pairs to check, e.g. `"{}"` `"()"` `"[]"` `"<>"`. Repeatable. |
-| `--all` | Check all common pairs: `()` `{}` `[]` `<>` |
+| [clap](https://crates.io/crates/clap) | CLI argument parsing |
+| [rmcp](https://crates.io/crates/rmcp) | MCP server framework/transport |
+| [serde](https://crates.io/crates/serde) | Structured diagnostics serialization |
+| [serde_json](https://crates.io/crates/serde_json) | JSON diagnostics output |
+| [tokio](https://crates.io/crates/tokio) | Async runtime for MCP server |
+| [schemars](https://crates.io/crates/schemars) | MCP parameter schema generation |
+| [nom](https://crates.io/crates/nom) | Parser primitives used in sanitizer/runtime paths |
 
-Default pairs (when no flags are given): `()` `{}` `[]`
+## Quick Start
 
-### Supported extensions (directory scan)
+### Prerequisites
 
-When given a directory, bracebalance recursively checks all files with these extensions:
+- Rust (latest stable)
 
-| Category | Extensions |
-|---|---|
-| TypeScript / JavaScript | `.ts` `.tsx` `.js` `.jsx` `.mjs` `.cjs` |
-| Systems | `.rs` `.c` `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` |
-| JVM | `.java` `.kt` `.kts` `.scala` `.groovy` `.clj` `.cljs` `.cljc` |
-| Scripting | `.py` `.rb` `.php` `.lua` `.r` `.pl` `.pm` |
-| Go / Swift / Dart | `.go` `.swift` `.dart` |
-| .NET | `.cs` `.fs` `.fsi` `.fsx` |
-| Functional | `.hs` `.ml` `.mli` `.ex` `.exs` `.erl` `.hrl` `.elm` |
-| Frontend frameworks | `.vue` `.svelte` |
-| Shell | `.sh` `.bash` `.zsh` `.fish` `.ps1` `.psm1` |
-| Data / query | `.sql` `.graphql` `.gql` `.proto` |
-| Config / data | `.json` `.jsonc` `.toml` `.yml` `.yaml` |
-| Markup | `.html` `.htm` `.xml` |
-| Infra / build | `.tf` `.hcl` `.cmake` `.dockerfile` |
-| Misc | `.vim` `.el` |
+### Running Locally
 
-## Output
-
-For a balanced file:
-
-```
-================================================================================
-File: src/main.rs  |  Checking: () {} []
-================================================================================
-[OK] BALANCED: All () {} [] pairs match!
-```
-
-For a file with errors:
-
-```
-================================================================================
-File: broken.py  |  Checking: () {} []
-================================================================================
-
-[ERROR] 2 issue(s) found:
-  Line 12: '}' at line 12 does not match '[' opened at line 12
-           {"key2": [4, 5, 6},
-  Line 32: ']' at line 32 does not match '(' opened at line 32
-           {"a": 8, "b": [9, (10, 11], ...}
-
-[ERROR] 3 UNCLOSED OPENER(S):
-
-These were NEVER closed:
-  Line 4: '{' (needs '}')  data = {
-  Line 5: '{' (needs '}')      "level1": {
-  Line 6: '[' (needs ']')          "level2": [
-
->>> FIX: Add closing char(s): ]}} <<<
-
-[FAILED] File has balance errors!
-```
-
-When checking multiple files, a summary is printed at the end:
-
-```
-================================================================================
-SUMMARY
-================================================================================
-Total files checked: 8
-Failed files: 2
-
-[FAILED] Files with balance errors:
-  - src/broken_a.ts
-  - src/broken_b.json
-```
-
-## Language-aware sanitizer
-
-For recognised file extensions, bracebalance strips comments and string literals from the source text before counting brackets. This prevents false positives from brackets that appear inside strings or comments.
-
-| Language(s) | What is stripped |
-|---|---|
-| TypeScript / JavaScript / Vue / Svelte | `//` line, `/* */` block, `""` `''` `` `` `` strings |
-| C / C++ / C# / Java / Go / Dart / Proto | `//` line, `/* */` block, `""` strings |
-| Swift | `//` line, `/* */` block (nested), `"""` `""` `''` strings |
-| Kotlin / Scala / Groovy | `//` line, `/* */` block, `"""` `""` `''` strings |
-| Rust | `//` line, `/* */` block, raw `r#"..."#` strings |
-| Python | `#` comment, `"""` `'''` triple-quoted, `r""` raw strings |
-| Ruby | `#` comment, `"""` `""` `''` strings, `%q{}`/`%w[]` percent literals (nested), `<<~HEREDOC` heredocs |
-| Shell / Bash / Zsh / Fish | `#` comment, `<<HEREDOC` heredocs, `""` `''` strings |
-| PHP | `//` `#` `/* */` comments, `<<<EOT` heredocs |
-| Elixir | `#` comment, `~r/.../` `~w{...}` sigils, `"""` `""` strings |
-| Lua | `--` line, `--[[` block comments, `[[` long strings |
-| SQL | `--` line comments, `$$`/`$tag$` dollar-quoting |
-| GraphQL | `#` comment, `"""` doc-strings, `""` strings |
-| Haskell | `--` line, `{- nested -}` block comments |
-| OCaml / F# | `(* nested *)` block comments |
-| Erlang | `%` line comments |
-| Clojure | `;` line comments |
-| Vim script | `"` line comments |
-| HTML / XML | `<!-- -->` comments |
-| TOML / YAML / R / etc. | `#` line comments |
-
-For unsupported extensions the raw text is checked as-is (no sanitisation).
-
-## Installation
-
-### From source
-
-Requires [Rust](https://rustup.rs/).
-
-```sh
+```bash
 git clone https://github.com/npiesco/bracebalance
 cd bracebalance
 cargo build --release
-# CLI:        target/release/bracebalance
-# MCP server: target/release/bracebalance-mcp-server
+
+# CLI binary
+target/release/bracebalance src/
+
+# MCP server binary
+target/release/bracebalance-mcp-server
 ```
 
-### Add to PATH
+### Basic CLI Usage
 
-```sh
-# Linux / macOS
-cp target/release/bracebalance ~/.local/bin/
-cp target/release/bracebalance-mcp-server ~/.local/bin/
+```bash
+# Default pairs: () {} []
+bracebalance src/main.rs
 
-# Windows (PowerShell)
-Copy-Item .\target\release\bracebalance.exe $env:USERPROFILE\.cargo\bin\
-Copy-Item .\target\release\bracebalance-mcp-server.exe $env:USERPROFILE\.cargo\bin\
+# Recursive scan (supported extensions only)
+bracebalance src/
+
+# Custom pairs
+bracebalance -p "()" -p "[]" script.py
+
+# Include angle brackets
+bracebalance --all include/*.hpp
 ```
 
-## MCP Server
+### Configuration
 
-`bracebalance-mcp-server` speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio — plug it into Claude Desktop, Cursor, or any other MCP host.
+Configure pair selection via CLI flags (`clap`):
 
-### Tools
+```bash
+# Default pair set
+bracebalance src/
 
-| Tool | Description |
-|---|---|
-| `check_text` | Check raw source text supplied inline |
-| `check_path` | Check a single file or recursively scan a directory |
-| `check_paths` | Check multiple files/directories in one call |
+# Custom pair set
+bracebalance -p "{}" -p "[]" config.json
 
-All three tools accept optional `pairs` (e.g. `["()", "{}"]`) and `all_pairs` (boolean) to control which pairs are checked.
-
-### Claude Desktop config
-
-```json
-{
-  "mcpServers": {
-    "bracebalance": {
-      "command": "bracebalance-mcp-server"
-    }
-  }
-}
+# Full common set
+bracebalance --all src/
 ```
 
-### VS Code config
+Configure MCP output behavior per tool call:
 
-Add to `.vscode/mcp.json`:
+- `pairs`: custom list such as `["()", "{}"]`
+- `all_pairs`: boolean
+- `output`: `"text"` (default) or `"json"`
+- `diagnostics_level`: `"concise"` (default) or `"expanded"`
+
+## MCP Integration
+
+### VS Code
+
+Add this to `.vscode/mcp.json`:
 
 ```jsonc
 {
@@ -220,75 +109,74 @@ Add to `.vscode/mcp.json`:
 }
 ```
 
-### rmcp MRE — `.waiting()` is required
+### Claude Desktop
 
-If your rmcp 0.16 MCP server exits instantly ("Connection state: Stopped") the
-moment a client connects, you are almost certainly missing the `.waiting()` call.
+```json
+{
+  "mcpServers": {
+    "bracebalance": {
+      "command": "bracebalance-mcp-server"
+    }
+  }
+}
+```
 
-`.serve()` returns a `RunningService` future that **sets up** the connection — it
-does **not** block.  You must call `.waiting().await` on the returned service to
-keep the process alive and processing requests.
+### rmcp Runtime Note
+
+For rmcp 0.16 servers, `.waiting()` is required to keep the process alive:
 
 ```rust
-// ✅ Correct — server stays alive
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let server = MyMcpServer::new();
     let transport = rmcp::transport::stdio();
     let service = server.serve(transport).await?;
-    service.waiting().await?;          // <── keeps the process alive
+    service.waiting().await?;
     Ok(())
 }
 ```
 
-```rust
-// ❌ Wrong — exits immediately after handshake
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let server = MyMcpServer::new();
-    let transport = rmcp::transport::stdio();
-    server.serve(transport).await?;    // returns, process exits
-    Ok(())
-}
-```
+Also: avoid writing protocol output to stdout from an MCP stdio server. Use stderr logging (`eprintln!`) for diagnostics.
 
-Also: **never** write to stdout (`println!`, `print!`, `dbg!`) in an MCP stdio
-server — it corrupts the JSON-RPC framing and the client will disconnect.  Use
-`eprintln!` (stderr) for diagnostics, or better yet use `tracing` with a stderr
-subscriber.
+## Development
 
-## Running Tests
+### Testing
 
-The `test_artifacts/` directory contains **51 deeply nested test files** across **16 languages** — 29 valid and 22 intentionally broken. They cover all sanitizer edge cases: nested comments, percent literals, heredocs, dollar-quoting, sigils, CRLF line endings, and more.
+Run all tests:
 
-```sh
+```bash
 cargo test
 ```
 
-```
-test result: ok. 61 passed  (sanitizer unit tests)
-test result: ok.  4 passed  (integration — file + dir scans)
-test result: ok. 20 passed  (library unit tests)
-```
+Fixture coverage in `test_artifacts/` includes deeply nested valid and broken examples across multiple language families, used for both classification and diagnostics quality checks.
 
-## Examples
+### Architecture
 
-```sh
-# Scan an entire project directory
-bracebalance src/
+BraceBalance is organized around three layers:
 
-# Scan multiple directories
-bracebalance src/ tests/ config/
+- **Sanitizer layer**: extension-aware stripping of comments/strings before structural checks.
+- **Balance engine**: skip-forward recovery, unclosed/opener tracking, suppression handling, and fix/fallback guidance generation.
+- **Presentation layer**: concise/expanded text rendering and structured JSON diagnostics for MCP/automation consumers.
 
-# Check all TypeScript files in a project
-bracebalance src/**/*.ts src/**/*.tsx
+### Diagnostics Semantics (Safe Fix Contract)
 
-# Use in CI (non-zero exit on any error)
-bracebalance --all src/*.c && echo "All good"
+- `fix_suggestion` is emitted only when append-at-EOF is guaranteed safe.
+- When append safety cannot be guaranteed, `fallback_fix_suggestion` provides actionable manual steps.
+- In concise JSON mode, `unclosed_details` and `extra_closer_details` are arrays (`[]`) rather than `null`.
 
-# Check JSON configs
-bracebalance -p "{}" -p "[]" config.json
+### Supported Extension Families
 
-# Check angle brackets in C++ templates
-bracebalance --all include/*.hpp
-```
+Directory scans include TypeScript/JavaScript, systems languages, JVM languages, scripting languages, Go/Swift/Dart, .NET, shell, SQL/GraphQL, config/data formats, markup, stylesheets, infra/build files, and editor scripts (full extension set is defined in `SUPPORTED_EXTENSIONS` in `src/lib.rs`).
+
+## License
+
+MIT.
+
+## Contributing
+
+Contributions are welcome. Open an issue or pull request with:
+
+- the expected vs actual behavior,
+- a minimal reproduction,
+- test evidence (`cargo test` output),
+- and MCP/CLI command examples where relevant.

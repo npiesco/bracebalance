@@ -460,6 +460,24 @@ fn expanded_report_includes_suppressed_details() {
 }
 
 #[test]
+fn expanded_report_does_not_compact_unclosed_list() {
+    let src = "{\n(\n[\n{\n(\n[\n{\n(\n[\n{\n(\n[\n";
+    let r = check_balance_str(src, DEFAULT_PAIRS);
+    assert!(!r.is_balanced);
+    assert!(r.unclosed.len() > 8, "fixture should create many unclosed openers");
+
+    let expanded = format_report_expanded("inline", &r);
+    assert!(
+        !expanded.contains("more omitted") && !expanded.contains("Showing first"),
+        "expanded report should show full unclosed list without compaction:\n{expanded}"
+    );
+    assert!(
+        expanded.contains("Line 12:"),
+        "expanded output should include deep unclosed entries:\n{expanded}"
+    );
+}
+
+#[test]
 fn structured_output_has_required_fields() {
     let r = check_balance_str("[{]}", DEFAULT_PAIRS);
     let payload = build_structured_diagnostics("inline", &r, false);
@@ -588,4 +606,56 @@ fn concise_report_compacts_large_unclosed_lists() {
         report.contains("Showing first") || report.contains("more omitted"),
         "concise report should compact large unclosed lists:\n{report}"
     );
+}
+
+#[test]
+fn concise_report_uses_actionable_manual_fallback_when_no_append_fix() {
+    let r = check_balance_str("[{]}", DEFAULT_PAIRS);
+    assert!(r.fix_suggestion.is_none(), "interleaved case should have no append fix");
+
+    let report = format_report("inline", &r);
+    assert!(
+        report.contains("Manual repair: start at line"),
+        "concise output should show actionable fallback guidance:\n{report}"
+    );
+}
+
+#[test]
+fn concise_report_includes_suppressed_detail_preview() {
+    let r = check_balance_str("[{]}", DEFAULT_PAIRS);
+    assert!(r.suppressed_extra_closers > 0, "fixture should create suppressed details");
+
+    let report = format_report("inline", &r);
+    assert!(
+        report.contains("Suppressed detail preview"),
+        "concise output should include suppressed detail preview:\n{report}"
+    );
+    assert!(
+        report.contains("Use expanded diagnostics"),
+        "concise output should point to expanded diagnostics for full trace:\n{report}"
+    );
+}
+
+#[test]
+fn all_broken_artifacts_have_actionable_fix_guidance() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = manifest.join("test_artifacts");
+    let all_files = collect_files(&[dir]);
+    let broken_files: Vec<_> = all_files
+        .into_iter()
+        .filter(|f| f.file_name().unwrap().to_str().unwrap().starts_with("broken_"))
+        .collect();
+    assert!(!broken_files.is_empty(), "should find broken files");
+
+    for path in broken_files {
+        let result = check_balance_file(&path, DEFAULT_PAIRS).expect("should read artifact");
+        assert!(!result.is_balanced, "{} should be broken", path.display());
+
+        let payload = build_structured_diagnostics(&path.display().to_string(), &result, false);
+        assert!(
+            payload.fix_suggestion.is_some() || payload.fallback_fix_suggestion.is_some(),
+            "{} should provide append fix or actionable fallback guidance",
+            path.display()
+        );
+    }
 }
