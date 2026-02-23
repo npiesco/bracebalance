@@ -45,6 +45,8 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "json", "jsonc", "toml", "yml", "yaml",
     // Markup
     "html", "htm", "xml",
+    // Stylesheets
+    "css", "scss", "sass", "less",
     // Infra / build
     "tf", "hcl", "cmake", "dockerfile",
     // Misc
@@ -253,6 +255,9 @@ pub fn check_balance_str_ext(
                                 ch, line_num, top.ch, top.line_num
                             ),
                         });
+                        // Recovery strategy: consume the stale opener so one root mismatch
+                        // doesn't cascade into many secondary mismatches.
+                        open_stack.pop();
                     }
                 } else {
                     mismatches.push(BalanceMismatch {

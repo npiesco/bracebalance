@@ -44,6 +44,14 @@ fn mismatch_detected() {
 }
 
 #[test]
+fn mismatch_does_not_cascade_after_recovery() {
+    let r = check_balance_str("[}", DEFAULT_PAIRS);
+    assert!(!r.is_balanced);
+    assert_eq!(r.mismatches.len(), 1, "expected one root mismatch, got: {:?}", r.mismatches);
+    assert!(r.unclosed.is_empty(), "stale opener should be recovered, got: {:?}", r.unclosed);
+}
+
+#[test]
 fn empty_string_is_balanced() {
     let r = check_balance_str("", DEFAULT_PAIRS);
     assert!(r.is_balanced);
@@ -132,7 +140,7 @@ fn resolve_pairs_default_when_empty() {
 
 #[test]
 fn supported_extensions_recognized() {
-    for ext in &["rs", "ts", "tsx", "js", "jsx", "py", "json", "go", "java"] {
+    for ext in &["rs", "ts", "tsx", "js", "jsx", "py", "json", "go", "java", "css", "scss", "sass", "less"] {
         let name = format!("file.{ext}");
         let path = Path::new(&name);
         assert!(is_supported_extension(path), "Expected {ext} to be supported");

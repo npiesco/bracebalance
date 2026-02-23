@@ -44,6 +44,8 @@ pub enum CommentStyle {
     Semicolon,
     /// `% ...` to end of line  (Erlang)
     Percent,
+    /// `--[[...]]`, `--[=[...]=]`, etc. (Lua block comment)
+    LuaBlock,
     /// `"...` to end of line  (Vim)
     VimLineComment,
 }
@@ -67,6 +69,10 @@ pub enum StringStyle {
     PythonRawSingle,
     /// `r#"..."#`  Rust raw string (variable hash count)
     RustRaw,
+    /// `R"tag(...)tag"`  C++ raw string (optional tag)
+    CppRaw,
+    /// `@"..."` with doubled `""` escapes (C# verbatim)
+    CSharpVerbatim,
     /// `[[ ... ]]`, `[=[ ... ]=]`, etc.  Lua long string / block
     LuaLongString,
     /// `~r/.../`, `~w{...}`, etc.  Elixir sigils (non-quote delimiter)
@@ -77,6 +83,8 @@ pub enum StringStyle {
     SqlDollar,
     /// `<<LABEL ... LABEL`  shell/ruby/php heredoc
     Heredoc,
+    /// `@"..."@` / `@'...'@` (PowerShell here-string)
+    PowerShellHereString,
 }
 
 /// Combined syntax config for one language family.
@@ -101,6 +109,21 @@ static C_STYLE: LangSyntax = LangSyntax {
 static C_STYLE_BACKTICK: LangSyntax = LangSyntax {
     comments: &[CLineComment, CBlockComment],
     strings: &[Double, Single, Backtick],
+};
+
+static CPP_STYLE: LangSyntax = LangSyntax {
+    comments: &[CLineComment, CBlockComment],
+    strings: &[CppRaw, Double, Single],
+};
+
+static GO_STYLE: LangSyntax = LangSyntax {
+    comments: &[CLineComment, CBlockComment],
+    strings: &[Backtick, Double, Single],
+};
+
+static CSHARP_STYLE: LangSyntax = LangSyntax {
+    comments: &[CLineComment, CBlockComment],
+    strings: &[CSharpVerbatim, Double, Single],
 };
 
 static PYTHON: LangSyntax = LangSyntax {
@@ -169,7 +192,7 @@ static PHP: LangSyntax = LangSyntax {
 };
 
 static LUA: LangSyntax = LangSyntax {
-    comments: &[DoubleDash],
+    comments: &[LuaBlock, DoubleDash],
     strings: &[LuaLongString, Double, Single],
 };
 
@@ -185,7 +208,7 @@ static JSONC_STYLE: LangSyntax = LangSyntax {
 
 static TOML_STYLE: LangSyntax = LangSyntax {
     comments: &[Hash],
-    strings: &[Double, Single],
+    strings: &[TripleDouble, TripleSingle, Double, Single],
 };
 
 static YAML_STYLE: LangSyntax = LangSyntax {
@@ -210,7 +233,7 @@ static KOTLIN: LangSyntax = LangSyntax {
 
 static POWERSHELL: LangSyntax = LangSyntax {
     comments: &[Hash],
-    strings: &[Double, Single],
+    strings: &[PowerShellHereString, Double, Single],
 };
 
 static EMACS_LISP: LangSyntax = LangSyntax {
@@ -252,9 +275,13 @@ static PLAIN: LangSyntax = LangSyntax {
 pub fn syntax_for_extension(ext: &str) -> &'static LangSyntax {
     match ext {
         "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "vue" | "svelte" => &C_STYLE_BACKTICK,
-        "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "hxx"
-        | "java" | "go" | "dart" | "cs"
+        "c" | "h"
+        | "java" | "dart"
         | "proto" | "tf" | "hcl" => &C_STYLE,
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" => &CPP_STYLE,
+        "go" => &GO_STYLE,
+        "cs" => &CSHARP_STYLE,
+        "css" | "scss" | "sass" | "less" => &C_STYLE,
         "swift" => &SWIFT,
         "kt" | "kts" => &KOTLIN,
         "scala" => &SCALA,
@@ -352,6 +379,16 @@ fn parse_double_dash_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
     let (rest, _) = take_while::<_, _, Err<'_>>(|b: u8| b != b'\n').parse_complete(rest)?;
     let len = input.len() - rest.len();
     Ok((rest, &input[..len]))
+}
+
+/// `--[[...]]`, `--[=[...]=]`, etc. (Lua block comment)
+fn parse_lua_block_comment(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    if input.len() < 3 || !input.starts_with(b"--[") {
+        return Err(err(input));
+    }
+    let long = parse_lua_long_string(&input[2..])?;
+    let consumed = 2 + long.1.len();
+    Ok((&input[consumed..], &input[..consumed]))
 }
 
 /// `{- ... -}` — supports arbitrary nesting.
@@ -498,10 +535,31 @@ fn parse_single_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
 
 /// `` `...` `` with `` \` `` escape.
 fn parse_backtick_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
-    let (rest, _) = tag::<_, _, Err<'_>>(b"`" as &[u8]).parse_complete(input)?;
-    let (rest, _) = parse_escaped_body(rest, b'`')?;
-    let len = input.len() - rest.len();
-    Ok((rest, &input[..len]))
+    let (body, _) = tag::<_, _, Err<'_>>(b"`" as &[u8]).parse_complete(input)?;
+    let mut i = 0usize;
+    let mut interp_depth = 0usize;
+    while i < body.len() {
+        if body[i] == b'\\' && i + 1 < body.len() {
+            i += 2;
+            continue;
+        }
+        if i + 1 < body.len() && body[i] == b'$' && body[i + 1] == b'{' {
+            interp_depth += 1;
+            i += 2;
+            continue;
+        }
+        if body[i] == b'}' && interp_depth > 0 {
+            interp_depth -= 1;
+            i += 1;
+            continue;
+        }
+        if body[i] == b'`' && interp_depth == 0 {
+            let end = 1 + i + 1;
+            return Ok((&input[end..], &input[..end]));
+        }
+        i += 1;
+    }
+    Ok((&input[input.len()..], input))
 }
 
 /// `"""..."""`
@@ -571,6 +629,55 @@ fn parse_rust_raw_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
     Ok((&input[input.len()..], input))
 }
 
+/// `R"tag(...)tag"` — C++ raw string literal.
+fn parse_cpp_raw_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    if input.len() < 3 || input[0] != b'R' || input[1] != b'"' {
+        return Err(err(input));
+    }
+    let mut tag_end = 2usize;
+    while tag_end < input.len() && input[tag_end] != b'(' {
+        tag_end += 1;
+    }
+    if tag_end >= input.len() {
+        return Err(err(input));
+    }
+    let dtag = &input[2..tag_end];
+    let mut close = Vec::with_capacity(2 + dtag.len());
+    close.push(b')');
+    close.extend_from_slice(dtag);
+    close.push(b'"');
+    let mut pos = tag_end + 1;
+    while pos + close.len() <= input.len() {
+        if &input[pos..pos + close.len()] == close.as_slice() {
+            let total = pos + close.len();
+            return Ok((&input[total..], &input[..total]));
+        }
+        pos += 1;
+    }
+    Ok((&input[input.len()..], input))
+}
+
+/// `@"..."` — C# verbatim string with doubled quote escapes.
+fn parse_csharp_verbatim_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    if input.len() < 2 || input[0] != b'@' || input[1] != b'"' {
+        return Err(err(input));
+    }
+    let mut pos = 2usize;
+    while pos < input.len() {
+        if input[pos] == b'"' {
+            if pos + 1 < input.len() && input[pos + 1] == b'"' {
+                pos += 2;
+            } else {
+                pos += 1;
+                return Ok((&input[pos..], &input[..pos]));
+            }
+        } else {
+            pos += 1;
+        }
+    }
+    Ok((&input[input.len()..], input))
+}
+
 // ---------------------------------------------------------------------------
 // New parsers for gaps
 // ---------------------------------------------------------------------------
@@ -621,15 +728,29 @@ fn parse_elixir_sigil(input: &[u8]) -> IResult<&[u8], &[u8]> {
     };
     let body = &input[3..];
     let mut pos = 0;
+    let is_bracket_pair = matches!(open, b'{' | b'[' | b'(');
+    let mut depth: usize = 1;
     while pos < body.len() {
-        if body[pos] == close {
-            return Ok((&input[3 + pos + 1..], &input[..3 + pos + 1]));
-        }
-        if close == open && body[pos] == b'\\' && pos + 1 < body.len() {
+        if body[pos] == b'\\' && pos + 1 < body.len() {
             pos += 2;
+            continue;
+        }
+        if is_bracket_pair && body[pos] == open {
+            depth += 1;
+        } else if body[pos] == close {
+            if is_bracket_pair {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok((&input[3 + pos + 1..], &input[..3 + pos + 1]));
+                }
+            } else {
+                return Ok((&input[3 + pos + 1..], &input[..3 + pos + 1]));
+            }
         } else {
             pos += 1;
+            continue;
         }
+        pos += 1;
     }
     Ok((&input[input.len()..], input))
 }
@@ -761,6 +882,31 @@ fn parse_heredoc(input: &[u8]) -> IResult<&[u8], &[u8]> {
     Ok((&input[input.len()..], input))
 }
 
+/// `@"..."@` / `@'...'@` (PowerShell here-string).
+fn parse_powershell_here_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    if input.len() < 3 || input[0] != b'@' || !matches!(input[1], b'"' | b'\'') {
+        return Err(err(input));
+    }
+    let quote = input[1];
+    if input[2] != b'\n' {
+        return Err(err(input));
+    }
+    let close = [quote, b'@'];
+    let mut pos = 3usize;
+    while pos < input.len() {
+        let line_start = pos;
+        while pos < input.len() && input[pos] != b'\n' { pos += 1; }
+        let raw_line = &input[line_start..pos];
+        let line = if raw_line.ends_with(b"\r") { &raw_line[..raw_line.len() - 1] } else { raw_line };
+        if line == close {
+            let total = if pos < input.len() { pos + 1 } else { pos };
+            return Ok((&input[total..], &input[..total]));
+        }
+        if pos < input.len() { pos += 1; }
+    }
+    Ok((&input[input.len()..], input))
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch helpers
 // ---------------------------------------------------------------------------
@@ -776,6 +922,7 @@ fn try_parse_comment<'a>(input: &'a [u8], style: CommentStyle) -> IResult<&'a [u
         HtmlBlock       => parse_html_comment(input),
         Semicolon       => parse_semicolon_comment(input),
         Percent         => parse_percent_comment(input),
+        LuaBlock        => parse_lua_block_comment(input),
         VimLineComment  => parse_vim_line_comment(input),
     }
 }
@@ -790,11 +937,14 @@ fn try_parse_string<'a>(input: &'a [u8], style: StringStyle) -> IResult<&'a [u8]
         PythonRawDouble     => parse_python_raw_double(input),
         PythonRawSingle     => parse_python_raw_single(input),
         RustRaw             => parse_rust_raw_string(input),
+        CppRaw              => parse_cpp_raw_string(input),
+        CSharpVerbatim      => parse_csharp_verbatim_string(input),
         LuaLongString       => parse_lua_long_string(input),
         ElixirSigil         => parse_elixir_sigil(input),
         RubyPercentLiteral  => parse_ruby_percent_literal(input),
         SqlDollar           => parse_sql_dollar_quote(input),
         Heredoc             => parse_heredoc(input),
+        PowerShellHereString=> parse_powershell_here_string(input),
     }
 }
 
@@ -1186,6 +1336,13 @@ mod tests {
     }
 
     #[test]
+    fn lua_block_comment_multiline_body_stripped() {
+        let r = san("--[[\n  { [ ( in comment\n]]\nlocal x = {}", "lua");
+        assert!(r.contains("{}"));
+        assert_eq!(r.matches('{').count(), 1, "comment brace leaked: {r:?}");
+    }
+
+    #[test]
     fn lua_long_string_basic() {
         let r = san("local s = [[ { [ ( not braces ]]", "lua");
         assert!(!r.contains('{'));
@@ -1227,6 +1384,12 @@ mod tests {
     fn powershell_here_string_single() {
         let r = san("$x = @'\n{ [ ( not braces\n'@\n$y = 1", "ps1");
         assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn powershell_here_string_real_brace_survives_after_block() {
+        let r = san("$x = @\"\n{ [ ( in here-string\n\"@\n$y = { ok = 1 }", "ps1");
+        assert!(r.contains("{ ok = 1 }"));
     }
 
     // -- Ruby % literals ----------------------------------------------------
@@ -1275,6 +1438,56 @@ mod tests {
     fn elixir_sigil_w_curly() {
         let r = san("x = ~w{ word1 { word2 }", "ex");
         assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn elixir_sigil_r_curly_nested_delims() {
+        let r = san("x = ~r{a{b}c}\\nreal = {}", "ex");
+        assert!(r.contains("real = {}"));
+        assert_eq!(r.matches('{').count(), 1, "nested sigil leaked: {r:?}");
+        assert_eq!(r.matches('}').count(), 1, "nested sigil left trailing close brace: {r:?}");
+    }
+
+    #[test]
+    fn go_raw_backtick_string_is_stripped() {
+        let r = san("q := `SELECT * FROM t WHERE x = {1}`\\nreal := map[string]int{}", "go");
+        assert!(r.contains("map[string]int{}"));
+        assert_eq!(r.matches('{').count(), 1, "go raw string leaked: {r:?}");
+    }
+
+    #[test]
+    fn toml_multiline_string_is_stripped() {
+        let r = san("val = \"\"\"\\n{ [ ( not braces\\n\"\"\"\\nreal = {}", "toml");
+        assert!(r.contains("real = {}"));
+        assert_eq!(r.matches('{').count(), 1, "toml multiline leaked: {r:?}");
+    }
+
+    #[test]
+    fn csharp_verbatim_string_is_stripped() {
+        let r = san("var s = @\"say \"\"hello\"\" to {nobody}\";\\nvar real = new int[] { 1 };", "cs");
+        assert!(r.contains("new int[] { 1 }"));
+        assert_eq!(r.matches('{').count(), 1, "csharp verbatim leaked: {r:?}");
+    }
+
+    #[test]
+    fn js_nested_template_literal_is_stripped() {
+        let r = san("const s = `outer ${`inner ${1}`}`;\\nconst real = {};", "js");
+        assert!(r.contains("const real = {};"));
+        assert_eq!(r.matches('{').count(), 1, "nested template leaked: {r:?}");
+    }
+
+    #[test]
+    fn cpp_raw_string_is_stripped() {
+        let r = san("auto s = R\"tag({ [ ( not braces ) ] })tag\";\\nstd::vector<int> v{};", "cpp");
+        assert!(r.contains("v{}"));
+        assert_eq!(r.matches('{').count(), 1, "cpp raw string leaked: {r:?}");
+    }
+
+    #[test]
+    fn css_extension_maps_to_c_style_sanitizer() {
+        let r = san("/* { [ ( not braces */\\n.rule { color: red; }", "css");
+        assert!(r.contains(".rule { color: red; }"));
+        assert_eq!(r.matches('{').count(), 1, "css comment leaked: {r:?}");
     }
 
     // -- SQL $$ dollar-quoting -----------------------------------------------
