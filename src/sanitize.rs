@@ -57,6 +57,8 @@ pub enum StringStyle {
     Double,
     /// `'...'` with `\'` escape
     Single,
+    /// Rust `'x'`, `'\n'`, `'\u{...}'`, or `b'x'` char literal
+    RustChar,
     /// `` `...` `` with `` \` `` escape  (JS / TS template literals)
     Backtick,
     /// `"""..."""`  Python triple-double
@@ -133,7 +135,7 @@ static PYTHON: LangSyntax = LangSyntax {
 
 static RUST: LangSyntax = LangSyntax {
     comments: &[CLineComment, CBlockComment],
-    strings: &[RustRaw, Double],
+    strings: &[RustRaw, Double, RustChar],
 };
 
 static HASH_ONLY: LangSyntax = LangSyntax {
@@ -531,6 +533,73 @@ fn parse_single_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
     let (rest, _) = parse_escaped_body(rest, b'\'')?;
     let len = input.len() - rest.len();
     Ok((rest, &input[..len]))
+}
+
+/// Rust `'x'`, `'\n'`, `'\u{...}'`, or `b'x'` char literal.
+fn parse_rust_char_literal(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    fn utf8_scalar_width(first: u8) -> usize {
+        match first {
+            0x00..=0x7F => 1,
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            _ => 1,
+        }
+    }
+
+    let start = if input.len() >= 2 && input[0] == b'b' && input[1] == b'\'' {
+        1usize
+    } else if !input.is_empty() && input[0] == b'\'' {
+        0usize
+    } else {
+        return Err(err(input));
+    };
+
+    let mut pos = start + 1;
+    if pos >= input.len() {
+        return Err(err(input));
+    }
+
+    if input[pos] == b'\\' {
+        pos += 1;
+        if pos >= input.len() {
+            return Err(err(input));
+        }
+        match input[pos] {
+            b'u' if pos + 1 < input.len() && input[pos + 1] == b'{' => {
+                pos += 2;
+                let digits_start = pos;
+                while pos < input.len() && input[pos] != b'}' {
+                    pos += 1;
+                }
+                if pos == digits_start || pos >= input.len() {
+                    return Err(err(input));
+                }
+                pos += 1;
+            }
+            b'x' => {
+                if pos + 2 >= input.len() {
+                    return Err(err(input));
+                }
+                pos += 3;
+            }
+            _ => {
+                pos += 1;
+            }
+        }
+    } else {
+        if matches!(input[pos], b'\'' | b'\n' | b'\r') {
+            return Err(err(input));
+        }
+        pos += utf8_scalar_width(input[pos]);
+    }
+
+    if pos >= input.len() || input[pos] != b'\'' {
+        return Err(err(input));
+    }
+
+    pos += 1;
+    Ok((&input[pos..], &input[..pos]))
 }
 
 /// `` `...` `` with `` \` `` escape.
@@ -931,6 +1000,7 @@ fn try_parse_string<'a>(input: &'a [u8], style: StringStyle) -> IResult<&'a [u8]
     match style {
         Double              => parse_double_string(input),
         Single              => parse_single_string(input),
+        RustChar            => parse_rust_char_literal(input),
         Backtick            => parse_backtick_string(input),
         TripleDouble        => parse_triple_double(input),
         TripleSingle        => parse_triple_single(input),
@@ -1100,6 +1170,17 @@ mod tests {
     fn rust_double_string_with_escape() {
         let r = san(r#"let s = "hello \"world\" { notabrace }";"#, "rs");
         assert!(!r.contains('{'));
+    }
+
+    #[test]
+    fn rust_char_literals_are_stripped_but_lifetimes_remain() {
+        let r = san("fn borrow<'a>(value: &'a str) -> char { let a = '('; let b = '{'; let c = '\"'; value.chars().next().unwrap_or('\\n') }", "rs");
+        assert!(r.contains("<'a>"), "lifetimes should remain visible: {r}");
+        assert!(r.contains("&'a str"), "borrow lifetimes should remain visible: {r}");
+        assert!(!r.contains("'('"), "char literal should be stripped: {r}");
+        assert!(!r.contains("'{'"), "char literal should be stripped: {r}");
+        assert!(!r.contains("'\"'"), "quote char literal should be stripped: {r}");
+        assert!(!r.contains("'\\n'"), "escaped char literal should be stripped: {r}");
     }
 
     // -- JS/TS backtick templates -------------------------------------------

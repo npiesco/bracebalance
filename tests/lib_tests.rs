@@ -254,6 +254,23 @@ fn fix_suggestion_correct_order() {
 }
 
 #[test]
+fn rust_char_literals_do_not_trigger_false_positive_unclosed_delimiters() {
+    let src = r#"
+fn main() {
+    let open = '(';
+    let brace = '{';
+    let quote = '"';
+    let line = "// [Spooler] {l}";
+    if line.starts_with("//") {
+        println!("{line}");
+    }
+}
+"#;
+    let r = check_balance_str_ext(src, DEFAULT_PAIRS, Some("rs"));
+    assert!(r.is_balanced, "rust char literals should be sanitized: {r:?}");
+}
+
+#[test]
 fn all_pairs_includes_angle() {
     // In ALL_PAIRS mode, < > are also tracked
     let r = check_balance_str("Vec<String", ALL_PAIRS);
@@ -658,4 +675,16 @@ fn all_broken_artifacts_have_actionable_fix_guidance() {
             path.display()
         );
     }
+}
+
+#[test]
+fn spooler_artifact_balances_after_rust_literal_sanitization() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let path = manifest.join("test_artifacts/valid_spooler_go.rs");
+    let result = check_balance_file(&path, DEFAULT_PAIRS).expect("should read copied spooler artifact");
+
+    assert!(result.is_balanced, "the copied spooler artifact should balance after Rust literal sanitization: {result:#?}");
+    assert!(result.unclosed.is_empty(), "balanced spooler artifact should not report unclosed delimiters: {result:#?}");
+    assert!(result.mismatches.is_empty(), "balanced spooler artifact should not report mismatches: {result:#?}");
+    assert!(result.suppressed_extra_closer_details.is_empty(), "balanced spooler artifact should not report suppressed extra closers: {result:#?}");
 }
