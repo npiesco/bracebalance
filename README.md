@@ -1,5 +1,9 @@
 # BraceBalance
 
+<p align="center">
+  <img src="./bracebalance-logo.png" alt="BraceBalance logo" width="220" />
+</p>
+
 > **High-signal delimiter balancing for real source files, with language-aware sanitization, recovery-oriented diagnostics, and MCP integration.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
