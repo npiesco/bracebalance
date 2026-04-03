@@ -150,7 +150,7 @@ graph TB
 ```
 
 **Legend:**
-Blue = CLI interface • Purple = MCP interface • Teal = input resolution • Green = sanitization pipeline • Orange = balance engine • Red = diagnostics • Gray = outputs
+🟣 Interfaces · 🟢 Sanitization · 🟠 Balance Engine · 🔴 Diagnostics · ⚪ Outputs
 
 The major layers are:
 
