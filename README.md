@@ -1,17 +1,21 @@
+<div align="center">
+  <img src="bracebalance-logo.png" alt="BraceBalance" width="220">
+  <br><br>
+  <p><strong>Rust + CLI + MCP + source-aware sanitization</strong></p>
+
+  [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://opensource.org/licenses/MIT)
+  [![Rust Edition](https://img.shields.io/badge/rust-2024%20edition-orange?style=flat-square)](Cargo.toml)
+  [![MCP](https://img.shields.io/badge/MCP-stdio%20server-6f42c1?style=flat-square)](src/bin/bracebalance-mcp-server.rs)
+  [![Diagnostics](https://img.shields.io/badge/diagnostics-recovery--oriented-0a7ea4?style=flat-square)](#how-it-works)
+</div>
+
+> *High-signal delimiter balancing for real source files*
+
 # BraceBalance
 
-<p align="center">
-  <img src="./bracebalance-logo.png" alt="BraceBalance logo" width="220" />
-</p>
+BraceBalance is a Rust-based delimiter balance checker for source code and code-like files. It strips comments and string literals before scanning, continues through malformed nesting with skip-forward recovery, and produces diagnostics that are useful in editors, CI, and MCP-driven agent workflows.
 
-> **High-signal delimiter balancing for real source files, with language-aware sanitization, recovery-oriented diagnostics, and MCP integration.**
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://github.com/npiesco/bracebalance/actions/workflows/rust.yml/badge.svg)](https://github.com/npiesco/bracebalance/actions)
-
-BraceBalance is a Rust tool for finding structural delimiter failures in real code, not toy strings. It strips comments and string literals before checking, keeps scanning after malformed nesting, and returns diagnostics that are useful in editors, CI, and agent workflows.
-
-The intended flow is simple: point it at a file or directory, let it filter out syntax noise, then use the resulting unclosed-opener, extra-closer, and repair guidance output to fix the actual structural problem instead of chasing cascaded parser fallout.
+The core value is straightforward: delimiter checks are only useful when they ignore syntax noise and still produce a readable report after the first structural mistake. BraceBalance is built for that case.
 
 ## Why This Exists
 
@@ -22,7 +26,7 @@ Delimiter checkers often fail in two predictable ways:
 
 BraceBalance is built to avoid both. It sanitizes source text first, then uses recovery-oriented scanning so one bad closer does not collapse the rest of the report.
 
-## What You Get Quickly
+## Why Use It
 
 - A CLI that checks files or recursively scans directories.
 - Language-aware sanitization across common source and config formats.
@@ -30,7 +34,7 @@ BraceBalance is built to avoid both. It sanitizes source text first, then uses r
 - Safe append-at-EOF suggestions when they are guaranteed correct.
 - Structured JSON and MCP tools for editor and agent integration.
 
-## Product Flow
+## Checking Flow
 
 ```text
 Read file or scan directory
@@ -41,18 +45,6 @@ Run stack-based balance check with skip-forward recovery
         ↓
 Return focused diagnostics and, when safe, an append fix
 ```
-
-## What It Is
-
-- A structural delimiter checker for source code and code-like files.
-- A language-aware sanitizer plus recovery-oriented balance engine.
-- A CLI and MCP server that share the same checking logic.
-
-## What It Is Not
-
-- Not a full parser or compiler frontend.
-- Not a formatter or AST repair tool.
-- Not a naive top-of-stack-only bracket matcher.
 
 ## Features
 
@@ -201,7 +193,44 @@ Fixture coverage in `test_artifacts/` includes deeply nested valid and broken ex
 
 ### Architecture
 
-BraceBalance is organized around three layers:
+BraceBalance is organized around a small shared library with two entrypoints: the CLI binary and the MCP server binary. Both feed into the same sanitizer, balance engine, and diagnostics formatter.
+
+```mermaid
+graph TB
+    subgraph Interfaces
+        CLI["bracebalance CLI<br/>src/main.rs"]
+        MCP["bracebalance-mcp-server<br/>src/bin/bracebalance-mcp-server.rs"]
+    end
+
+    subgraph Inputs
+        FILES["Files / directories"]
+        TEXT["Inline source text"]
+    end
+
+    subgraph Core Library
+        COLLECT["Path collection<br/>collect_files"]
+        PAIRS["Pair resolution<br/>resolve_pairs"]
+        SAN["Source-aware sanitizer<br/>sanitize + syntax_for_extension"]
+        BAL["Balance engine<br/>check_balance_str_ext"]
+        DIAG["Diagnostics + formatting<br/>text / json / summary"]
+    end
+
+    CLI --> PAIRS
+    CLI --> COLLECT
+    COLLECT --> FILES
+    MCP --> PAIRS
+    MCP --> FILES
+    MCP --> TEXT
+    FILES --> SAN
+    TEXT --> SAN
+    PAIRS --> BAL
+    SAN --> BAL
+    BAL --> DIAG
+    DIAG --> CLI
+    DIAG --> MCP
+```
+
+The major layers are:
 
 - **Sanitizer layer**: extension-aware stripping of comments/strings before structural checks.
 - **Balance engine**: skip-forward recovery, unclosed/opener tracking, suppression handling, and fix/fallback guidance generation.
