@@ -63,6 +63,102 @@ Return focused diagnostics and, when safe, an append fix
 - **Structured Output**: Optional JSON diagnostics for automation and CI pipelines.
 - **CI-Friendly Exit Codes**: Returns `0` when all checks pass and `1` when any check fails.
 
+## Supported Languages and File Types
+
+Directory scans recurse into supported source and config files only. Current coverage includes:
+
+| Category | Extensions |
+|---|---|
+| TypeScript / JavaScript | `ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs` |
+| Systems | `rs`, `c`, `cpp`, `cc`, `cxx`, `h`, `hpp`, `hxx` |
+| JVM | `java`, `kt`, `kts`, `scala`, `groovy`, `clj`, `cljs`, `cljc` |
+| Scripting | `py`, `rb`, `php`, `lua`, `r`, `pl`, `pm` |
+| Go / Swift / Dart | `go`, `swift`, `dart` |
+| .NET / F# | `cs`, `fs`, `fsi`, `fsx` |
+| Functional | `hs`, `ml`, `mli`, `ex`, `exs`, `erl`, `hrl`, `elm` |
+| Frontend frameworks | `vue`, `svelte` |
+| Shell / PowerShell | `sh`, `bash`, `zsh`, `fish`, `ps1`, `psm1` |
+| Data / Query | `sql`, `graphql`, `gql`, `proto` |
+| Config / Data | `json`, `jsonc`, `toml`, `yml`, `yaml` |
+| Markup | `html`, `htm`, `xml` |
+| Stylesheets | `css`, `scss`, `sass`, `less` |
+| Infra / Build | `tf`, `hcl`, `cmake`, `dockerfile` |
+| Editor / Misc | `vim`, `el` |
+
+The scanner extension list lives in [`src/lib.rs`](/home/npiesco/bracebalance/src/lib.rs#L24). Language-specific sanitization behavior is selected in [`src/sanitize.rs`](/home/npiesco/bracebalance/src/sanitize.rs#L277).
+
+## Architecture
+
+BraceBalance is a shared Rust library with two front doors: a CLI binary for file and directory checks, and an MCP server for editor and agent integrations. Both use the same pair resolution, source-aware sanitization, balance engine, and diagnostics pipeline.
+
+```mermaid
+graph TB
+    subgraph "Inputs"
+        SRC["Source text"]
+        PATHS["Files / directories"]
+    end
+
+    subgraph "Interfaces"
+        CLI["bracebalance CLI<br/>src/main.rs"]
+        MCP["bracebalance-mcp-server<br/>src/bin/bracebalance-mcp-server.rs"]
+    end
+
+    subgraph "Shared Library"
+        PAIRS["Pair Resolver<br/>resolve_pairs<br/>default / custom / --all"]
+        COLLECT["Path Collector<br/>collect_files<br/>supported extensions only"]
+
+        subgraph "Checking Pipeline"
+            SYNTAX["Syntax Selector<br/>syntax_for_extension"]
+            SAN["Sanitizer<br/>sanitize comments + strings<br/>preserve line positions"]
+            BAL["Balance Engine<br/>check_balance_str_ext<br/>stack + skip-forward recovery"]
+            DIAG["Diagnostics Builder<br/>text reports / JSON / summaries<br/>fix + fallback guidance"]
+        end
+    end
+
+    subgraph "Outputs"
+        TEXT_OUT["CLI reports<br/>per-file + summary"]
+        JSON_OUT["Structured diagnostics<br/>JSON / MCP tool responses"]
+    end
+
+    CLI --> PAIRS
+    CLI --> COLLECT
+    COLLECT --> PATHS
+    MCP --> PAIRS
+    MCP --> COLLECT
+    MCP --> SRC
+    PATHS --> SYNTAX
+    SRC --> SYNTAX
+    SYNTAX --> SAN
+    PAIRS --> BAL
+    SAN --> BAL
+    BAL --> DIAG
+    DIAG --> TEXT_OUT
+    DIAG --> JSON_OUT
+    TEXT_OUT --> CLI
+    JSON_OUT --> MCP
+
+    style CLI fill:#2563eb,stroke:#333,color:#fff
+    style MCP fill:#7c3aed,stroke:#333,color:#fff
+    style PAIRS fill:#0f766e,stroke:#333,color:#fff
+    style COLLECT fill:#0f766e,stroke:#333,color:#fff
+    style SYNTAX fill:#10b981,stroke:#333,color:#fff
+    style SAN fill:#10b981,stroke:#333,color:#fff
+    style BAL fill:#f59e0b,stroke:#333,color:#fff
+    style DIAG fill:#dc2626,stroke:#333,color:#fff
+    style TEXT_OUT fill:#64748b,stroke:#333,color:#fff
+    style JSON_OUT fill:#64748b,stroke:#333,color:#fff
+```
+
+**Legend:**
+Blue = CLI interface • Purple = MCP interface • Teal = input resolution • Green = sanitization pipeline • Orange = balance engine • Red = diagnostics • Gray = outputs
+
+The major layers are:
+
+- **Input resolution**: selects delimiter pairs and expands directory paths into supported files.
+- **Sanitizer layer**: strips comments and string literals with extension-aware syntax rules before structural checks.
+- **Balance engine**: performs stack-based matching with skip-forward recovery, orphaned-opener tracking, and fix-safety checks.
+- **Presentation layer**: renders concise or expanded text diagnostics and structured JSON for automation or MCP clients.
+
 ## Key Dependencies
 
 | Crate | Purpose |
@@ -191,51 +287,6 @@ cargo test
 
 Fixture coverage in `test_artifacts/` includes deeply nested valid and broken examples across multiple language families, used for both classification and diagnostics quality checks.
 
-### Architecture
-
-BraceBalance is organized around a small shared library with two entrypoints: the CLI binary and the MCP server binary. Both feed into the same sanitizer, balance engine, and diagnostics formatter.
-
-```mermaid
-graph TB
-    subgraph Interfaces
-        CLI["bracebalance CLI<br/>src/main.rs"]
-        MCP["bracebalance-mcp-server<br/>src/bin/bracebalance-mcp-server.rs"]
-    end
-
-    subgraph Inputs
-        FILES["Files / directories"]
-        TEXT["Inline source text"]
-    end
-
-    subgraph Core Library
-        COLLECT["Path collection<br/>collect_files"]
-        PAIRS["Pair resolution<br/>resolve_pairs"]
-        SAN["Source-aware sanitizer<br/>sanitize + syntax_for_extension"]
-        BAL["Balance engine<br/>check_balance_str_ext"]
-        DIAG["Diagnostics + formatting<br/>text / json / summary"]
-    end
-
-    CLI --> PAIRS
-    CLI --> COLLECT
-    COLLECT --> FILES
-    MCP --> PAIRS
-    MCP --> FILES
-    MCP --> TEXT
-    FILES --> SAN
-    TEXT --> SAN
-    PAIRS --> BAL
-    SAN --> BAL
-    BAL --> DIAG
-    DIAG --> CLI
-    DIAG --> MCP
-```
-
-The major layers are:
-
-- **Sanitizer layer**: extension-aware stripping of comments/strings before structural checks.
-- **Balance engine**: skip-forward recovery, unclosed/opener tracking, suppression handling, and fix/fallback guidance generation.
-- **Presentation layer**: concise/expanded text rendering and structured JSON diagnostics for MCP/automation consumers.
-
 ### How It Works
 
 The core algorithm is a stack-based delimiter checker with one important twist: it sanitizes source code first, and it uses skip-forward recovery instead of failing on the first mismatch.
@@ -292,10 +343,6 @@ This recovery behavior is the reason BraceBalance can keep scanning and still pr
 - `fix_suggestion` is emitted only when append-at-EOF is guaranteed safe.
 - When append safety cannot be guaranteed, `fallback_fix_suggestion` provides actionable manual steps.
 - In concise JSON mode, `unclosed_details` and `extra_closer_details` are arrays (`[]`) rather than `null`.
-
-### Supported Extension Families
-
-Directory scans include TypeScript/JavaScript, systems languages, JVM languages, scripting languages, Go/Swift/Dart, .NET, shell, SQL/GraphQL, config/data formats, markup, stylesheets, infra/build files, and editor scripts (full extension set is defined in `SUPPORTED_EXTENSIONS` in `src/lib.rs`).
 
 ## License
 
