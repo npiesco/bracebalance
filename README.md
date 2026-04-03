@@ -150,7 +150,7 @@ graph TB
 ```
 
 **Legend:**
-🟣 Interfaces · 🟢 Sanitization · 🟠 Balance Engine · 🔴 Diagnostics · ⚪ Outputs
+🔵 CLI · 🟣 MCP · 🟢 Sanitization · 🟠 Balance Engine · 🔴 Diagnostics · ⚪ Outputs
 
 The major layers are:
 
