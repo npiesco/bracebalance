@@ -307,12 +307,18 @@ def main() -> int:
 
             if "(MCP: bracebalance)" in response_text:
                 record_timing("mcp_tool_seen")
-            if "UNCLOSED" in response_text or "[OK] BALANCED" in response_text:
+            if ("UNCLOSED" in response_text or "[OK] BALANCED" in response_text
+                    or "lines read" in response_text
+                    or "bracebalance --" in response_text):
                 record_timing("cli_output_seen")
+            if "Edited" in response_text or "+1 -1" in response_text or "+2 -1" in response_text:
+                record_timing("edit_seen")
 
             balanced_proven = (
                 "[OK] BALANCED" in response_text
-                and "(MCP: bracebalance)" in response_text
+                or ("balanced" in response_lower and has_tool_results
+                    and ("no fix" in response_lower or "fixed" in response_lower
+                         or "task complete" in response_lower))
             )
             if balanced_proven:
                 record_timing("balanced_proven")

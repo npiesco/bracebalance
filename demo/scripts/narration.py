@@ -4,6 +4,8 @@ SEGMENTS = [
     {
         "id": "intro",
         "after_event": "prompt_sent",
+        "fallback_event": None,
+        "fallback_offset": 3.0,
         "offset": 0.0,
         "text": (
             "BraceBalance ships an MCP server so Copilot can check any file "
@@ -14,6 +16,8 @@ SEGMENTS = [
     {
         "id": "mcp_check",
         "after_event": "mcp_tool_seen",
+        "fallback_event": "copilot_responding",
+        "fallback_offset": 10.0,
         "offset": 0.5,
         "text": (
             "Copilot calls the bracebalance MCP tool to scan for unclosed "
@@ -23,6 +27,8 @@ SEGMENTS = [
     {
         "id": "cli_verify",
         "after_event": "cli_output_seen",
+        "fallback_event": "mcp_tool_seen",
+        "fallback_offset": 15.0,
         "offset": 0.5,
         "text": (
             "Now it verifies the results with the command-line interface, "
@@ -32,6 +38,8 @@ SEGMENTS = [
     {
         "id": "fix_and_done",
         "after_event": "balanced_proven",
+        "fallback_event": "demo_done",
+        "fallback_offset": -5.0,
         "offset": 0.5,
         "text": (
             "A few small edits later, the CLI confirms the file is balanced. "

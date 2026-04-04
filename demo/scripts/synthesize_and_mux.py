@@ -82,11 +82,21 @@ def synthesize_narration(video_duration: float, timings: dict[str, float]) -> Pa
     segment_wavs: list[tuple[Path, float]] = []  # (wav_path, start_seconds)
     for seg in SEGMENTS:
         event = seg["after_event"]
-        if event not in timings:
-            print(f"  [tts] skipping '{seg['id']}': timing event '{event}' not recorded")
+        fallback_event = seg.get("fallback_event")
+        fallback_offset = seg.get("fallback_offset", 0.0)
+
+        if event in timings:
+            start_at = timings[event] + seg["offset"]
+        elif fallback_event and fallback_event in timings:
+            start_at = timings[fallback_event] + fallback_offset
+            print(f"  [tts] {seg['id']}: using fallback {fallback_event}+{fallback_offset}s")
+        elif fallback_event is None and seg["offset"] > 0:
+            start_at = seg["offset"]
+        else:
+            print(f"  [tts] skipping '{seg['id']}': no timing event available")
             continue
 
-        start_at = timings[event] + seg["offset"]
+        start_at = max(0.0, min(start_at, video_duration - 5.0))
         raw_path = OUTPUT_DIR / f"_narr_{seg['id']}.wav"
         dur = synthesize_segment(speechsdk, speech_config, seg["text"], raw_path)
         print(f"  [tts] {seg['id']}: start={start_at:.1f}s  speech={dur:.1f}s")
