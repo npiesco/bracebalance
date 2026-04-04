@@ -104,6 +104,11 @@ def main() -> int:
 
     target_window = wait_for_target_window(process.pid, launch_wait_seconds)
     if not target_window:
+        # Fallback: search by window title if PID-based search fails
+        output = run_capture("xdotool", "search", "--onlyvisible", "--name", "BraceBalance Demo")
+        windows = [line.strip() for line in output.splitlines() if line.strip()]
+        target_window = windows[-1] if windows else ""
+    if not target_window:
         print(f"unable to detect a terminal window for pid {process.pid} after launch", file=sys.stderr)
         return 1
 
