@@ -4,6 +4,7 @@
 .cargo/
 .cosynt/
 .codex
+.env
 auto/
 cosynt.db
 cosynt.db.hnsw

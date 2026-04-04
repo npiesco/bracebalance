@@ -21,6 +21,7 @@ MIXED_DIR = FIXTURES_DIR / "mixed"
 RESET_SCRIPT = DEMO_DIR / "scripts" / "reset_fixtures.py"
 COPILOT_START = DEMO_DIR / "scripts" / "start_copilot_session.py"
 GUI_LAUNCHER = DEMO_DIR / "scripts" / "launch_and_seed_terminal.py"
+TTS_SCRIPT = DEMO_DIR / "scripts" / "synthesize_and_mux.py"
 OPEN_TERMINAL = DEMO_DIR / "scripts" / "open_agent_terminal.py"
 MCP_CONFIG = Path("/home/npiesco/.copilot/mcp-config.json")
 COPILOT_CONFIG = Path("/home/npiesco/.copilot/config.json")
@@ -400,7 +401,30 @@ def main() -> int:
         print("\nDry run mode: executing full flow without recording or audio stages.")
         return launch_demo_session_in_current_terminal()
 
-    return launch_demo_session()
+    rc = launch_demo_session()
+    if rc != 0:
+        return rc
+
+    # Synthesize TTS narration and mux with recording
+    print("\n[RUN ] synthesize-and-mux")
+    started_at = time.time()
+    tts_result = subprocess.run(
+        ["uv", "run", "--with", "azure-cognitiveservices-speech", "python", str(TTS_SCRIPT)],
+        cwd=str(ROOT_DIR),
+        text=True,
+        check=False,
+    )
+    duration_seconds = time.time() - started_at
+    if tts_result.returncode != 0:
+        print(f"[FAIL] synthesize-and-mux ({duration_seconds:.2f}s): exited {tts_result.returncode}")
+        return tts_result.returncode
+    print(f"[PASS] synthesize-and-mux ({duration_seconds:.2f}s)")
+
+    final_video = DEMO_DIR / "output" / "bracebalance_demo_final.mp4"
+    if final_video.is_file():
+        size_mb = final_video.stat().st_size / (1024 * 1024)
+        print(f"\n✓ Final video: {final_video} ({size_mb:.1f} MB)")
+    return 0
 
 
 if __name__ == "__main__":
