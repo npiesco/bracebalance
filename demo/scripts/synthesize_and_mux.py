@@ -99,6 +99,15 @@ def synthesize_narration(video_duration: float, timings: dict[str, float]) -> Pa
             continue
 
         start_at = max(0.0, min(start_at, video_duration - 5.0))
+
+        # Prevent overlap: ensure this segment starts after the previous one ends
+        if segment_wavs:
+            prev_path, prev_start = segment_wavs[-1]
+            prev_dur = get_duration(prev_path)
+            earliest = prev_start + prev_dur + 0.5
+            if start_at < earliest:
+                start_at = earliest
+
         raw_path = OUTPUT_DIR / f"_narr_{seg['id']}.wav"
         dur = synthesize_segment(speechsdk, speech_config, seg["text"], raw_path)
         print(f"  [tts] {seg['id']}: start={start_at:.1f}s  speech={dur:.1f}s")

@@ -73,7 +73,7 @@ function brokenProcessor(config: BrokenConfig): void {
                 return ({
                     result: [
                         (x * 2),
-                        (x * 3,
+                        (x * 3),
                         {
                             nested: {
                                 values: [x, x + 1, x + 2],
@@ -82,7 +82,7 @@ function brokenProcessor(config: BrokenConfig): void {
                                     { b: [4, 5, 6] },
                                 ]
                             }
-                        })
+                        }
                     ]
                 });
             }
