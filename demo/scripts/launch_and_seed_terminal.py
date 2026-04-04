@@ -8,7 +8,8 @@ from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_COMMAND_FILE = ROOT_DIR / "demo" / "scripts" / "demo-session-command.txt"
+START_SCRIPT = ROOT_DIR / "demo" / "scripts" / "start_copilot_session.py"
+OPEN_TERMINAL = ROOT_DIR / "demo" / "scripts" / "open_agent_terminal.py"
 
 
 def run_capture(*args: str) -> str:
@@ -24,15 +25,6 @@ def require_command(name: str) -> None:
         sys.exit(1)
 
 
-def get_active_window() -> str:
-    return run_capture("xdotool", "getactivewindow")
-
-
-def list_visible_windows() -> list[str]:
-    output = run_capture("xdotool", "search", "--onlyvisible", "--name", ".*")
-    return sorted({line.strip() for line in output.splitlines() if line.strip()})
-
-
 def get_window_pid(window_id: str) -> str:
     return run_capture("xdotool", "getwindowpid", window_id)
 
@@ -41,80 +33,89 @@ def get_window_name(window_id: str) -> str:
     return run_capture("xdotool", "getwindowname", window_id)
 
 
-def wait_for_target_window(previous_window: str, before_windows: set[str], timeout_seconds: float) -> str:
+def wait_for_target_window(pid: int, timeout_seconds: float) -> str:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        current_windows = set(list_visible_windows())
-        new_windows = sorted(current_windows - before_windows)
-        if new_windows:
-            return new_windows[-1]
-
-        current_window = get_active_window()
-        if current_window and current_window != previous_window:
-            return current_window
-
+        output = run_capture("xdotool", "search", "--onlyvisible", "--pid", str(pid))
+        windows = [line.strip() for line in output.splitlines() if line.strip()]
+        if windows:
+            return windows[-1]
         time.sleep(0.1)
-
-    fallback_window = get_active_window()
-    if fallback_window:
-        return fallback_window
-
     return ""
 
 
-def type_line(window_id: str, line: str, type_delay_ms: int, post_line_delay_seconds: float) -> None:
-    subprocess.run(["xdotool", "windowactivate", "--sync", window_id], check=True)
-    if line:
-        subprocess.run(
-            ["xdotool", "type", "--window", window_id, "--delay", str(type_delay_ms), "--", line],
-            check=True,
-        )
-    subprocess.run(["xdotool", "key", "--window", window_id, "Return"], check=True)
-    time.sleep(post_line_delay_seconds)
+def activate_window(window_id: str) -> None:
+    subprocess.run(
+        ["xdotool", "windowactivate", "--sync", window_id],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def capture_window_screenshot(window_id: str, screenshot_path: Path) -> None:
+    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        ["import", "-window", window_id, str(screenshot_path)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"failed to capture screenshot for window {window_id}")
+    if not screenshot_path.is_file() or screenshot_path.stat().st_size == 0:
+        raise RuntimeError(f"screenshot was not written: {screenshot_path}")
 
 
 def main() -> int:
-    require_command("exo-open")
+    require_command("xfce4-terminal")
     require_command("xdotool")
+    require_command("import")
+    require_command("uv")
 
     if "DISPLAY" not in os.environ or not os.environ["DISPLAY"]:
         print("DISPLAY is not set; cannot launch a GUI terminal from this environment.", file=sys.stderr)
         return 1
 
-    command_file = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else DEFAULT_COMMAND_FILE
-    if not command_file.is_file():
-        print(f"command file not found: {command_file}", file=sys.stderr)
+    if not START_SCRIPT.is_file():
+        print(f"start script not found: {START_SCRIPT}", file=sys.stderr)
         return 1
 
-    launch_wait_seconds = float(os.environ.get("LAUNCH_WAIT_SECONDS", "6"))
-    type_delay_ms = int(os.environ.get("TYPE_DELAY_MS", "1"))
-    post_line_delay_seconds = float(os.environ.get("POST_LINE_DELAY_SECONDS", "0.2"))
+    launch_wait_seconds = float(os.environ.get("LAUNCH_WAIT_SECONDS", "10"))
+    screenshot_path = Path(os.environ.get("DEMO_LAUNCH_SCREENSHOT", "/tmp/bracebalance-demo-launch.png"))
 
-    previous_window = get_active_window()
-    before_windows = set(list_visible_windows())
-
-    launcher = subprocess.Popen(
-        [str(ROOT_DIR / "demo" / "scripts" / "open-agent-terminal.sh")],
+    process = subprocess.Popen(
+        [
+            "uv",
+            "run",
+            "python",
+            str(OPEN_TERMINAL),
+            "bash",
+            "-lc",
+            "DEMO_WINDOW_ID=$(xdotool getactivewindow) uv run python ./demo/scripts/start_copilot_session.py; exec bash",
+        ],
         cwd=ROOT_DIR,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    time.sleep(0.5)
 
-    target_window = wait_for_target_window(previous_window, before_windows, launch_wait_seconds)
+    target_window = wait_for_target_window(process.pid, launch_wait_seconds)
     if not target_window:
-        print("unable to detect a terminal window after launch", file=sys.stderr)
+        print(f"unable to detect a terminal window for pid {process.pid} after launch", file=sys.stderr)
         return 1
 
-    with command_file.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            type_line(target_window, raw_line.rstrip("\n"), type_delay_ms, post_line_delay_seconds)
+    activate_window(target_window)
+    time.sleep(0.5)
+    capture_window_screenshot(target_window, screenshot_path)
 
     target_window_pid = get_window_pid(target_window) or "unknown"
     target_window_name = get_window_name(target_window) or "unknown"
     print(
-        f"Seeded terminal window {target_window} pid={target_window_pid} "
-        f"name={target_window_name} using {command_file}"
+        f"Launched terminal window {target_window} pid={target_window_pid} "
+        f"name={target_window_name} screenshot={screenshot_path} running {START_SCRIPT}"
     )
     return 0
 

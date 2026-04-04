@@ -1,2 +1,0 @@
-cd /home/npiesco/bracebalance
-./demo/scripts/start-copilot-session.sh

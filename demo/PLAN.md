@@ -51,8 +51,8 @@ The MCP surface should not be shown as a raw inspector. Use a real terminal sess
 
 Recommended approach:
 
-- launch a terminal window with `exo-open --launch TerminalEmulator`
-- launch Copilot inside that terminal
+- launch a terminal window directly with `xfce4-terminal`
+- run the Copilot session command as the terminal's startup command
 - use Copilot interactive mode with an initial prompt so the first task is deterministic
 
 This keeps the demo focused on a visible human-and-agent workflow instead of a backend tool panel.
@@ -88,10 +88,19 @@ uv run python ./demo/scripts/launch_and_seed_terminal.py
 
 That script should:
 
-1. launch the clean terminal with `exo-open --launch TerminalEmulator`
-2. wait for the new terminal window to take focus
-3. type the contents of `demo/scripts/demo-session-command.txt`
-4. leave the audience looking at a normal terminal session
+1. launch a clean `xfce4-terminal` window directly
+2. pass the Copilot startup command directly to the terminal at launch
+3. resolve the terminal window by PID with `xdotool search --pid`
+4. capture a verification screenshot with `import -window`
+5. leave the audience looking at a normal terminal session
+
+Validated direct launch command:
+
+```bash
+xfce4-terminal --disable-server --working-directory=/home/npiesco/bracebalance --title='BraceBalance Demo' -x bash -lc 'uv run python ./demo/scripts/start_copilot_session.py; exec bash'
+```
+
+This direct `xfce4-terminal` path is the one that has been validated. `exo-open` indirection is not the recommended launch path for the demo.
 
 ### Reference Only
 
@@ -100,6 +109,8 @@ Use the local `agent-tty` README only to borrow ideas for:
 - launching and controlling a terminal session reproducibly
 - delivering the first prompt deterministically
 - sequencing a terminal-based recording
+- locating the real terminal window by PID for screenshots
+- using `Ctrl+C` and `Escape` as interruption or dismissal primitives when needed
 
 Do not show `agent-tty` itself in the BraceBalance video.
 
@@ -360,6 +371,14 @@ Before recording, run a gated dry run:
 uv run python ./demo/scripts/run_demo.py --dry-run
 ```
 
+`--dry-run` means the full operational flow still runs, including the visible terminal launch and the Copilot session path. It only skips recording and audio/narration concerns.
+
+When launched from a normal shell, `--dry-run` should hand itself off into a visible terminal first so the operator can see:
+
+1. every hard gate run live
+2. each pass/fail result with timing
+3. the final Copilot session launch in that same visible flow
+
 Each phase must hard-pass before the next begins:
 
 1. reset fixtures
@@ -380,7 +399,7 @@ The real demo uses the same entrypoint without the flag:
 uv run python ./demo/scripts/run_demo.py
 ```
 
-That run must pass the same gates first, then launch the visible terminal session.
+That run must pass the same gates first, then launch the visible terminal session. Both modes should emit timing for each phase, with explicit timing around the agent/MCP gate.
 
 ## Determinism Requirements
 
@@ -403,7 +422,7 @@ Requirements:
 - Verify the terminal-launch command opens the desired emulator
 - Verify Copilot can be launched inside the terminal emulator
 - Verify the first prompt can be delivered reproducibly
-- Verify the seeded command sequence lands in the new terminal window, not the previous focused app
+- Verify the terminal launches directly into the Copilot session command
 - Verify all commands use the copied demo fixtures
 - Verify the TypeScript repair yields exit 0 after edit
 - Verify the mixed directory still fails before its own repair
