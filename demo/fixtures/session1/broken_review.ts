@@ -49,7 +49,7 @@ function brokenProcessor(config: BrokenConfig): void {
                                                     value: v,
                                                     meta: {
                                                         type: typeof v,
-                                                        nested: [v, [v * 2, v * 3],
+                                                        nested: [v, [v * 2, v * 3]],
                                                     },
                                                 }))
                                                 : { raw: val };
@@ -82,7 +82,7 @@ function brokenProcessor(config: BrokenConfig): void {
                                     { b: [4, 5, 6] },
                                 ]
                             }
-                        }
+                        })
                     ]
                 });
             }
@@ -101,5 +101,6 @@ function brokenProcessor(config: BrokenConfig): void {
                     }
                 };  // <-- missing } for outer "stage2" object
             }
+        }
     ];
 }

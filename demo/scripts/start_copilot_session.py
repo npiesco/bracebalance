@@ -207,6 +207,17 @@ def main() -> int:
     exit_sent = False
     recent = ""
 
+    # Phase timing events for narration alignment
+    timings: dict[str, float] = {}
+    timings_path = ROOT_DIR / "demo" / "output" / "timings.json"
+    timings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def record_timing(event: str) -> None:
+        if event not in timings:
+            timings[event] = time.time() - start_time
+            timings_path.write_text(json.dumps(timings, indent=2) + "\n")
+            print(f"\n[controller] timing: {event} @ {timings[event]:.1f}s", file=sys.stderr)
+
     try:
         while True:
             if process.poll() is not None:
@@ -237,6 +248,7 @@ def main() -> int:
                 or "Type @ to mention files" in recent_for_ready
             )
             if ready_for_prompt and not prompt_sent:
+                record_timing("prompt_sent")
                 type_text(window_id, PROMPT)
                 send_keys(window_id, "Return")
                 prompt_sent = True
@@ -276,6 +288,7 @@ def main() -> int:
                 if any(m in recent for m in response_markers):
                     copilot_responded = True
                     response_start_pos = len(recent)
+                    record_timing("copilot_responding")
                     print("\n[controller] Copilot started responding", file=sys.stderr)
 
             if not copilot_responded:
@@ -292,10 +305,17 @@ def main() -> int:
                 or "lines read" in response_text
             )
 
+            if "(MCP: bracebalance)" in response_text:
+                record_timing("mcp_tool_seen")
+            if "UNCLOSED" in response_text or "[OK] BALANCED" in response_text:
+                record_timing("cli_output_seen")
+
             balanced_proven = (
                 "[OK] BALANCED" in response_text
                 and "(MCP: bracebalance)" in response_text
             )
+            if balanced_proven:
+                record_timing("balanced_proven")
             if balanced_proven and not finish_nudge_sent and demo_done_seen_at is None:
                 type_text(
                     window_id,
@@ -318,6 +338,7 @@ def main() -> int:
             copilot_said_marker = f"\u25cf {COMPLETION_MARKER}" in response_text
             if has_tool_results and (copilot_said_marker or semantic_completion) and demo_done_seen_at is None:
                 demo_done_seen_at = now
+                record_timing("demo_done")
                 print("\n[controller] detected completion", file=sys.stderr)
 
             if demo_done_seen_at is not None and not exit_sent and now - demo_done_seen_at >= 1.0:

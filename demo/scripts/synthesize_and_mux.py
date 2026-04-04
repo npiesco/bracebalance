@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Synthesize TTS narration and mux it with the demo recording."""
+"""Synthesize per-phase TTS narration placed at real timestamps, then mux with video."""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -10,6 +11,8 @@ from pathlib import Path
 DEMO_DIR = Path(__file__).resolve().parent
 ROOT_DIR = DEMO_DIR.parents[1]
 OUTPUT_DIR = ROOT_DIR / "demo" / "output"
+TIMINGS_PATH = OUTPUT_DIR / "timings.json"
+SAMPLE_RATE = 16000
 
 
 def load_env() -> None:
@@ -27,7 +30,7 @@ def load_env() -> None:
 def run(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
-        raise RuntimeError(f"Command failed: {' '.join(args)}\n{result.stderr}")
+        raise RuntimeError(f"Command failed: {' '.join(args)}\nstderr: {result.stderr[:500]}")
     return result
 
 
@@ -39,7 +42,25 @@ def get_duration(path: Path) -> float:
     return float(result.stdout.strip())
 
 
-def synthesize_narration(recording_path: Path) -> Path:
+def synthesize_segment(
+    speechsdk: object,
+    speech_config: object,
+    text: str,
+    out_path: Path,
+) -> float:
+    """Synthesize a single text segment to WAV, return its duration in seconds."""
+    audio_config = speechsdk.audio.AudioOutputConfig(filename=str(out_path))  # type: ignore
+    synthesizer = speechsdk.SpeechSynthesizer(  # type: ignore
+        speech_config=speech_config, audio_config=audio_config,
+    )
+    result = synthesizer.speak_text_async(text).get()
+    if result.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:  # type: ignore
+        raise RuntimeError(f"TTS failed: {result.reason}")
+    return get_duration(out_path)
+
+
+def synthesize_narration(video_duration: float, timings: dict[str, float]) -> Path:
+    """Synthesize each narration segment, place at its timestamp, mix into one track."""
     import azure.cognitiveservices.speech as speechsdk
 
     speech_key = os.environ.get("AZURE_SPEECH_KEY") or os.environ.get("FOUNDRY_API_KEY")
@@ -47,9 +68,9 @@ def synthesize_narration(recording_path: Path) -> Path:
     speech_voice = os.environ.get("BRACEBALANCE_DEMO_VOICE", "en-US-AndrewMultilingualNeural")
 
     if not speech_key or not speech_region:
-        raise RuntimeError("AZURE_SPEECH_KEY/FOUNDRY_API_KEY and AZURE_SPEECH_REGION/FOUNDRY_REGION must be set")
+        raise RuntimeError("AZURE_SPEECH_KEY/FOUNDRY_API_KEY and AZURE_SPEECH_REGION/FOUNDRY_REGION required")
 
-    from narration import NARRATION
+    from narration import SEGMENTS
 
     speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
     speech_config.speech_synthesis_voice_name = speech_voice
@@ -57,41 +78,58 @@ def synthesize_narration(recording_path: Path) -> Path:
         speechsdk.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm,
     )
 
-    raw_path = OUTPUT_DIR / "narration_raw.wav"
-    padded_path = OUTPUT_DIR / "narration.wav"
-    audio_config = speechsdk.audio.AudioOutputConfig(filename=str(raw_path))
-    synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+    # Synthesize each segment and compute its placement time
+    segment_wavs: list[tuple[Path, float]] = []  # (wav_path, start_seconds)
+    for seg in SEGMENTS:
+        event = seg["after_event"]
+        if event not in timings:
+            print(f"  [tts] skipping '{seg['id']}': timing event '{event}' not recorded")
+            continue
 
-    print(f"[tts] synthesizing narration ({len(NARRATION)} chars)...")
-    result = synthesizer.speak_text_async(NARRATION).get()
-    if result.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-        raise RuntimeError(f"Speech synthesis failed: {result.reason}")
+        start_at = timings[event] + seg["offset"]
+        raw_path = OUTPUT_DIR / f"_narr_{seg['id']}.wav"
+        dur = synthesize_segment(speechsdk, speech_config, seg["text"], raw_path)
+        print(f"  [tts] {seg['id']}: start={start_at:.1f}s  speech={dur:.1f}s")
+        segment_wavs.append((raw_path, start_at))
 
-    speech_duration = get_duration(raw_path)
-    video_duration = get_duration(recording_path)
-    print(f"[tts] speech={speech_duration:.1f}s  video={video_duration:.1f}s")
+    if not segment_wavs:
+        raise RuntimeError("No narration segments were synthesized")
 
-    # Fit narration to video: speed up if too long, pad with silence if too short
-    if speech_duration > video_duration + 0.5:
-        tempo = min(2.0, speech_duration / video_duration)
-        af_filter = f"atempo={tempo:.4f},apad=whole_dur={video_duration:.3f}"
-        print(f"[tts] fitting: tempo={tempo:.2f}x")
-    else:
-        af_filter = f"apad=whole_dur={video_duration:.3f}"
-        print("[tts] fitting: pad with silence")
+    # Build ffmpeg filter: delay each segment, then amix all together, pad to video length
+    inputs: list[str] = []
+    filter_parts: list[str] = []
+    for i, (wav_path, start_at) in enumerate(segment_wavs):
+        inputs.extend(["-i", str(wav_path)])
+        delay_ms = int(start_at * 1000)
+        filter_parts.append(f"[{i}]adelay={delay_ms}|{delay_ms}[d{i}]")
 
+    mix_inputs = "".join(f"[d{i}]" for i in range(len(segment_wavs)))
+    filter_parts.append(
+        f"{mix_inputs}amix=inputs={len(segment_wavs)}:duration=longest:normalize=0,"
+        f"apad=whole_dur={video_duration:.3f}"
+    )
+    filter_graph = ";".join(filter_parts)
+
+    narration_path = OUTPUT_DIR / "narration.wav"
     run(
         [
             "ffmpeg", "-y",
-            "-i", str(raw_path),
-            "-af", af_filter,
-            "-ar", "16000",
+            *inputs,
+            "-filter_complex", filter_graph,
+            "-ar", str(SAMPLE_RATE),
             "-ac", "1",
-            str(padded_path),
+            str(narration_path),
         ],
         timeout=60,
     )
-    return padded_path
+
+    # Clean up intermediate WAVs
+    for wav_path, _ in segment_wavs:
+        wav_path.unlink(missing_ok=True)
+
+    nar_dur = get_duration(narration_path)
+    print(f"  [tts] narration track: {nar_dur:.1f}s (video: {video_duration:.1f}s)")
+    return narration_path
 
 
 def merge_final_video(recording_path: Path, narration_path: Path, final_path: Path) -> None:
@@ -116,6 +154,16 @@ def merge_final_video(recording_path: Path, narration_path: Path, final_path: Pa
         ],
         timeout=600,
     )
+
+    # Validate audio stream exists
+    audio_check = run(
+        ["ffprobe", "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(final_path)],
+        timeout=20,
+    )
+    if not audio_check.stdout.strip():
+        raise RuntimeError(f"Final video has no audio stream: {final_path}")
+
     size_mb = final_path.stat().st_size / (1024 * 1024)
     print(f"[mux] final video: {final_path} ({size_mb:.1f} MB)")
 
@@ -130,7 +178,17 @@ def main() -> int:
         print(f"Recording not found: {recording_path}", file=sys.stderr)
         return 1
 
-    narration_path = synthesize_narration(recording_path)
+    if not TIMINGS_PATH.is_file():
+        print(f"Timings not found: {TIMINGS_PATH}", file=sys.stderr)
+        return 1
+
+    timings = json.loads(TIMINGS_PATH.read_text())
+    print(f"[tts] loaded timings: {timings}")
+
+    video_duration = get_duration(recording_path)
+    print(f"[tts] video duration: {video_duration:.1f}s")
+
+    narration_path = synthesize_narration(video_duration, timings)
     merge_final_video(recording_path, narration_path, final_path)
 
     print(f"\nDone. Final video: {final_path}")
