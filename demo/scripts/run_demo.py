@@ -193,7 +193,6 @@ def phase_agent_dry_run() -> str:
         "--no-ask-user",
         "--add-dir",
         str(ROOT_DIR),
-        "-s",
     ]
     process = subprocess.Popen(
         command,
