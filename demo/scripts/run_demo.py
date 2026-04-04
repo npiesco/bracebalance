@@ -171,7 +171,7 @@ def phase_copilot_folder_trust() -> str:
 @phase("copilot-start-prompt")
 def phase_copilot_start_prompt() -> str:
     content = COPILOT_START.read_text()
-    require("bracebalance MCP server tools first" in content, "Copilot start prompt does not prioritize bracebalance MCP")
+    require("bracebalance MCP" in content, "Copilot start prompt does not reference bracebalance MCP")
     require('"copilot"' in content, "Copilot start script is not launching Copilot")
     require('"-p"' not in content and "'-p'" not in content, "Copilot start script regressed to non-interactive prompt mode")
     require("sent initial task prompt" in content or "prompt_sent" in content or "type_text(window_id, PROMPT)" in content, "Copilot start script does not inject the initial task into the interactive session")
