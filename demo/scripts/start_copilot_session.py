@@ -100,7 +100,7 @@ def type_text(window_id: str, text: str) -> None:
         stderr=subprocess.DEVNULL,
     )
     subprocess.run(
-        ["xdotool", "type", "--clearmodifiers", "--delay", "30", text],
+        ["xdotool", "type", "--clearmodifiers", "--delay", "12", text],
         check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -249,6 +249,17 @@ def main() -> int:
                 or "Type @ to mention files" in recent_for_ready
             )
             if ready_for_prompt and not prompt_sent:
+                # Wait for recording to start before typing (visible mode only)
+                rec_marker = ROOT_DIR / "demo" / "output" / "recording_started_at"
+                if os.environ.get("DEMO_VISIBLE_MODE") == "1":
+                    waited = 0.0
+                    while not rec_marker.is_file() and waited < 15.0:
+                        time.sleep(0.2)
+                        waited += 0.2
+                    if rec_marker.is_file():
+                        print("\n[controller] recording confirmed, sending prompt", file=sys.stderr)
+                    else:
+                        print("\n[controller] WARNING: recording not confirmed after 15s, sending prompt anyway", file=sys.stderr)
                 record_timing("prompt_sent")
                 type_text(window_id, PROMPT)
                 send_keys(window_id, "Return")

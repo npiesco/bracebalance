@@ -231,7 +231,31 @@ def main() -> int:
     narration_path = synthesize_narration(trim_to, timings)
     merge_final_video(recording_path, narration_path, final_path, trim_to)
 
-    print(f"\nDone. Final video: {final_path}")
+    # Quality checks
+    final_dur = get_duration(final_path)
+    final_size = final_path.stat().st_size
+    prompt_sent_rel = timings.get("prompt_sent", 0)
+    errors: list[str] = []
+    if prompt_sent_rel < 0:
+        errors.append(f"prompt_sent is {prompt_sent_rel:.1f}s before recording — first chars will be cut off")
+    if final_dur < 30:
+        errors.append(f"video is only {final_dur:.1f}s — suspiciously short")
+    if final_size < 500_000:
+        errors.append(f"video is only {final_size / 1024:.0f} KB — suspiciously small")
+    typing_end = prompt_sent_rel + 850 * 0.012 + 1.0
+    if "copilot_responding" in timings:
+        response_start = timings["copilot_responding"]
+        typing_ratio = typing_end / final_dur if final_dur > 0 else 1.0
+        if typing_ratio > 0.4:
+            errors.append(f"typing occupies {typing_ratio:.0%} of video ({typing_end:.0f}s / {final_dur:.0f}s)")
+    if errors:
+        print(f"\n[QUALITY FAIL] {len(errors)} issue(s):", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        return 1
+
+    print(f"\n[QUALITY OK] {final_dur:.0f}s, {final_size / (1024*1024):.1f} MB, prompt_sent at {prompt_sent_rel:.1f}s")
+    print(f"Done. Final video: {final_path}")
     return 0
 
 
