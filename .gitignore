@@ -3,3 +3,11 @@
 .vectordb/
 .cargo/
 .cosynt/
+.codex
+auto/
+cosynt.db
+cosynt.db.hnsw
+cosynt.db.tantivy
+data/
+demo/output/
+__pycache__/

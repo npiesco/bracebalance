@@ -10,6 +10,9 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[2]
 START_SCRIPT = ROOT_DIR / "demo" / "scripts" / "start_copilot_session.py"
 OPEN_TERMINAL = ROOT_DIR / "demo" / "scripts" / "open_agent_terminal.py"
+CANDYCAM_BINDINGS = Path("/home/npiesco/candycam/bindings/python")
+OUTPUT_DIR = ROOT_DIR / "demo" / "output"
+RECORDING_PATH = OUTPUT_DIR / "bracebalance_demo.mp4"
 
 
 def run_capture(*args: str) -> str:
@@ -84,7 +87,12 @@ def main() -> int:
 
     launch_wait_seconds = float(os.environ.get("LAUNCH_WAIT_SECONDS", "10"))
     screenshot_path = Path(os.environ.get("DEMO_LAUNCH_SCREENSHOT", "/tmp/bracebalance-demo-launch.png"))
+    recording_path = Path(os.environ.get("DEMO_RECORDING_PATH", str(RECORDING_PATH)))
+    recording_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Launch terminal with the Copilot session; stderr goes to a temp file for exit code
+    exit_code_file = Path("/tmp/bracebalance-demo-exit-code")
+    exit_code_file.unlink(missing_ok=True)
     process = subprocess.Popen(
         [
             "uv",
@@ -93,7 +101,12 @@ def main() -> int:
             str(OPEN_TERMINAL),
             "bash",
             "-lc",
-            "DEMO_WINDOW_ID=$(xdotool getactivewindow) uv run python ./demo/scripts/start_copilot_session.py; exec bash",
+            (
+                "DEMO_WINDOW_ID=$(xdotool getactivewindow) "
+                "uv run python ./demo/scripts/start_copilot_session.py 2>/tmp/controller-stderr.log; "
+                f"echo $? > {exit_code_file}; "
+                "sleep 2"
+            ),
         ],
         cwd=ROOT_DIR,
         stdout=subprocess.DEVNULL,
@@ -104,7 +117,6 @@ def main() -> int:
 
     target_window = wait_for_target_window(process.pid, launch_wait_seconds)
     if not target_window:
-        # Fallback: search by window title if PID-based search fails
         output = run_capture("xdotool", "search", "--onlyvisible", "--name", "BraceBalance Demo")
         windows = [line.strip() for line in output.splitlines() if line.strip()]
         target_window = windows[-1] if windows else ""
@@ -122,7 +134,54 @@ def main() -> int:
         f"Launched terminal window {target_window} pid={target_window_pid} "
         f"name={target_window_name} screenshot={screenshot_path} running {START_SCRIPT}"
     )
-    return 0
+
+    # Start candycam recording
+    recorder = None
+    try:
+        os.environ["CANDYCAM_BACKEND"] = "xcap"
+        sys.path.insert(0, str(CANDYCAM_BINDINGS))
+        from capture import DemoRecorder, QualityPreset  # type: ignore
+        recorder = DemoRecorder()
+        recorder.start_recording_window_with_quality(
+            str(recording_path), "BraceBalance Demo", QualityPreset.SCREEN_SHARE,
+        )
+        print(f"Recording started: {recording_path}", file=sys.stderr)
+    except Exception as e:
+        print(f"WARNING: candycam recording failed to start: {e}", file=sys.stderr)
+        recorder = None
+
+    # Wait for the Copilot session to finish
+    max_wait = float(os.environ.get("DEMO_MAX_RUNTIME_SECONDS", "300"))
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        if exit_code_file.is_file():
+            break
+        time.sleep(1.0)
+
+    # Stop recording
+    if recorder is not None:
+        try:
+            recorder.stop_recording()
+            time.sleep(2.0)
+            if recording_path.is_file() and recording_path.stat().st_size > 0:
+                size_mb = recording_path.stat().st_size / (1024 * 1024)
+                print(f"Recording saved: {recording_path} ({size_mb:.1f} MB)")
+            else:
+                print(f"WARNING: recording file missing or empty: {recording_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"WARNING: candycam stop failed: {e}", file=sys.stderr)
+
+    # Read exit code
+    if exit_code_file.is_file():
+        try:
+            code = int(exit_code_file.read_text().strip())
+        except ValueError:
+            code = 1
+    else:
+        print("WARNING: session did not write exit code (timeout?)", file=sys.stderr)
+        code = 1
+
+    return code
 
 
 if __name__ == "__main__":
