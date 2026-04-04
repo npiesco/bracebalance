@@ -137,6 +137,7 @@ def main() -> int:
 
     # Start candycam recording
     recorder = None
+    recording_start_file = OUTPUT_DIR / "recording_started_at"
     try:
         os.environ["CANDYCAM_BACKEND"] = "xcap"
         sys.path.insert(0, str(CANDYCAM_BINDINGS))
@@ -145,6 +146,7 @@ def main() -> int:
         recorder.start_recording_window_with_quality(
             str(recording_path), "BraceBalance Demo", QualityPreset.SCREEN_SHARE,
         )
+        recording_start_file.write_text(str(time.time()))
         print(f"Recording started: {recording_path}", file=sys.stderr)
     except Exception as e:
         print(f"WARNING: candycam recording failed to start: {e}", file=sys.stderr)

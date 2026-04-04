@@ -12,7 +12,9 @@ DEMO_DIR = Path(__file__).resolve().parent
 ROOT_DIR = DEMO_DIR.parents[1]
 OUTPUT_DIR = ROOT_DIR / "demo" / "output"
 TIMINGS_PATH = OUTPUT_DIR / "timings.json"
+RECORDING_START_FILE = OUTPUT_DIR / "recording_started_at"
 SAMPLE_RATE = 16000
+END_BUFFER_SECONDS = 8.0
 
 
 def load_env() -> None:
@@ -142,13 +144,14 @@ def synthesize_narration(video_duration: float, timings: dict[str, float]) -> Pa
     return narration_path
 
 
-def merge_final_video(recording_path: Path, narration_path: Path, final_path: Path) -> None:
-    print(f"[mux] merging video + narration -> {final_path}")
+def merge_final_video(recording_path: Path, narration_path: Path, final_path: Path, trim_to: float) -> None:
+    print(f"[mux] merging video + narration -> {final_path} (trimmed to {trim_to:.1f}s)")
     run(
         [
             "ffmpeg", "-y",
             "-i", str(recording_path),
             "-i", str(narration_path),
+            "-t", f"{trim_to:.3f}",
             "-c:v", "libx264",
             "-preset", "medium",
             "-crf", "18",
@@ -192,14 +195,32 @@ def main() -> int:
         print(f"Timings not found: {TIMINGS_PATH}", file=sys.stderr)
         return 1
 
-    timings = json.loads(TIMINGS_PATH.read_text())
-    print(f"[tts] loaded timings: {timings}")
+    raw_timings = json.loads(TIMINGS_PATH.read_text())
+
+    # Read recording start time to convert absolute timestamps to video-relative
+    if RECORDING_START_FILE.is_file():
+        rec_start = float(RECORDING_START_FILE.read_text().strip())
+    else:
+        print("WARNING: recording_started_at not found, using earliest event as t=0", file=sys.stderr)
+        rec_start = min(raw_timings.values())
+
+    # Convert absolute timestamps to video-relative seconds
+    timings = {k: v - rec_start for k, v in raw_timings.items()}
+    print(f"[tts] video-relative timings: {{{', '.join(f'{k}: {v:.1f}s' for k, v in sorted(timings.items(), key=lambda x: x[1]))}}}")
 
     video_duration = get_duration(recording_path)
     print(f"[tts] video duration: {video_duration:.1f}s")
 
-    narration_path = synthesize_narration(video_duration, timings)
-    merge_final_video(recording_path, narration_path, final_path)
+    # Compute trimmed duration: demo_done + buffer, or full video if no demo_done
+    if "demo_done" in timings:
+        trim_to = timings["demo_done"] + END_BUFFER_SECONDS
+        trim_to = min(trim_to, video_duration)
+        print(f"[tts] trimming to {trim_to:.1f}s (demo_done + {END_BUFFER_SECONDS}s buffer)")
+    else:
+        trim_to = video_duration
+
+    narration_path = synthesize_narration(trim_to, timings)
+    merge_final_video(recording_path, narration_path, final_path, trim_to)
 
     print(f"\nDone. Final video: {final_path}")
     return 0

@@ -207,16 +207,17 @@ def main() -> int:
     exit_sent = False
     recent = ""
 
-    # Phase timing events for narration alignment
+    # Phase timing events for narration alignment (absolute timestamps)
     timings: dict[str, float] = {}
     timings_path = ROOT_DIR / "demo" / "output" / "timings.json"
     timings_path.parent.mkdir(parents=True, exist_ok=True)
 
     def record_timing(event: str) -> None:
         if event not in timings:
-            timings[event] = time.time() - start_time
+            timings[event] = time.time()
             timings_path.write_text(json.dumps(timings, indent=2) + "\n")
-            print(f"\n[controller] timing: {event} @ {timings[event]:.1f}s", file=sys.stderr)
+            elapsed = timings[event] - start_time
+            print(f"\n[controller] timing: {event} @ {elapsed:.1f}s", file=sys.stderr)
 
     try:
         while True:
