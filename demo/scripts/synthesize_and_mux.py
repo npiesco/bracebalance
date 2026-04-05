@@ -16,6 +16,10 @@ RECORDING_START_FILE = OUTPUT_DIR / "recording_started_at"
 SAMPLE_RATE = 16000
 END_BUFFER_SECONDS = 60.0
 
+# Speed-up: first SPEEDUP_END_SECONDS of raw video plays at SPEEDUP_FACTOR speed
+SPEEDUP_END_SECONDS = 70.0
+SPEEDUP_FACTOR = 3.0
+
 
 def load_env() -> None:
     env_path = DEMO_DIR / ".env"
@@ -153,6 +157,47 @@ def synthesize_narration(video_duration: float, timings: dict[str, float]) -> Pa
     return narration_path
 
 
+def create_speedup_video(src: Path, dst: Path, split_at: float, factor: float) -> float:
+    """Speed up [0, split_at] by *factor*, keep the rest at 1x. Returns new duration."""
+    print(f"[speedup] 0-{split_at:.0f}s at {factor:.0f}x, rest at 1x")
+    # setpts divides by factor to speed up; trim+setpts resets timestamps for concat
+    filter_v = (
+        f"[0:v]split=2[a][b];"
+        f"[a]trim=0:{split_at},setpts=PTS/{factor}[fast];"
+        f"[b]trim={split_at},setpts=PTS-STARTPTS[normal];"
+        f"[fast][normal]concat=n=2:v=1:a=0[outv]"
+    )
+    run(
+        [
+            "ffmpeg", "-y", "-i", str(src),
+            "-filter_complex", filter_v,
+            "-map", "[outv]",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+            "-tune", "stillimage", "-pix_fmt", "yuv420p",
+            "-an",
+            str(dst),
+        ],
+        timeout=600,
+    )
+    new_dur = get_duration(dst)
+    print(f"[speedup] {get_duration(src):.1f}s -> {new_dur:.1f}s")
+    return new_dur
+
+
+def adjust_timings_for_speedup(
+    timings: dict[str, float], split_at: float, factor: float,
+) -> dict[str, float]:
+    """Remap video-relative timings to account for the speed-up region."""
+    compressed = split_at / factor
+    adjusted: dict[str, float] = {}
+    for k, v in timings.items():
+        if v <= split_at:
+            adjusted[k] = v / factor
+        else:
+            adjusted[k] = compressed + (v - split_at)
+    return adjusted
+
+
 def merge_final_video(recording_path: Path, narration_path: Path, final_path: Path, trim_to: float) -> None:
     print(f"[mux] merging video + narration -> {final_path} (trimmed to {trim_to:.1f}s)")
     run(
@@ -217,8 +262,15 @@ def main() -> int:
     timings = {k: v - rec_start for k, v in raw_timings.items()}
     print(f"[tts] video-relative timings: {{{', '.join(f'{k}: {v:.1f}s' for k, v in sorted(timings.items(), key=lambda x: x[1]))}}}")
 
-    video_duration = get_duration(recording_path)
-    print(f"[tts] video duration: {video_duration:.1f}s")
+    # Create sped-up video: first N seconds at Nx, rest at 1x
+    speedup_path = OUTPUT_DIR / "_speedup.mp4"
+    video_duration = create_speedup_video(
+        recording_path, speedup_path, SPEEDUP_END_SECONDS, SPEEDUP_FACTOR,
+    )
+
+    # Adjust timings for the speed-up region
+    timings = adjust_timings_for_speedup(timings, SPEEDUP_END_SECONDS, SPEEDUP_FACTOR)
+    print(f"[tts] adjusted timings: {{{', '.join(f'{k}: {v:.1f}s' for k, v in sorted(timings.items(), key=lambda x: x[1]))}}}")
 
     # Compute trimmed duration: demo_done + buffer, or full video if no demo_done
     if "demo_done" in timings:
@@ -229,7 +281,10 @@ def main() -> int:
         trim_to = video_duration
 
     narration_path = synthesize_narration(trim_to, timings)
-    merge_final_video(recording_path, narration_path, final_path, trim_to)
+    merge_final_video(speedup_path, narration_path, final_path, trim_to)
+
+    # Clean up intermediate sped-up video
+    speedup_path.unlink(missing_ok=True)
 
     # Quality checks
     final_dur = get_duration(final_path)
@@ -242,7 +297,7 @@ def main() -> int:
         errors.append(f"video is only {final_dur:.1f}s — suspiciously short")
     if final_size < 500_000:
         errors.append(f"video is only {final_size / 1024:.0f} KB — suspiciously small")
-    typing_end = prompt_sent_rel + 850 * 0.030 + 1.0
+    typing_end = (prompt_sent_rel + 850 * 0.030 + 1.0) / SPEEDUP_FACTOR
     if "copilot_responding" in timings:
         response_start = timings["copilot_responding"]
         typing_ratio = typing_end / final_dur if final_dur > 0 else 1.0
