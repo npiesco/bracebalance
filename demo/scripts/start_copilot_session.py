@@ -155,7 +155,7 @@ def main() -> int:
     reset_fixtures()
     ensure_folder_trust()
 
-    if os.environ.get("DEMO_VISIBLE_MODE") == "1":
+    if os.environ.get("DEMO_VISIBLE_MODE") == "1" and not os.environ.get("DEMO_RECORDING"):
         visible_prelude()
 
     max_runtime_seconds = float(os.environ.get("DEMO_MAX_RUNTIME_SECONDS", "240"))
