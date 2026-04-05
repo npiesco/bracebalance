@@ -25,24 +25,35 @@ SEGMENTS = [
         ),
     },
     {
-        "id": "cli_verify",
-        "after_event": "cli_output_seen",
+        "id": "editing",
+        "after_event": "edit_seen",
         "fallback_event": "mcp_tool_seen",
-        "fallback_offset": 15.0,
+        "fallback_offset": 30.0,
         "offset": 0.5,
         "text": (
-            "Now it verifies the results with the command-line interface, "
-            "running the same structural check from a terminal."
+            "With the errors identified, Copilot edits the source file directly — "
+            "inserting the missing closing brackets exactly where they belong."
         ),
     },
     {
-        "id": "fix_and_done",
-        "after_event": "balanced_proven",
-        "fallback_event": "demo_done",
-        "fallback_offset": -5.0,
+        "id": "cli_verify",
+        "after_event": "cli_output_seen",
+        "fallback_event": "edit_seen",
+        "fallback_offset": 8.0,
         "offset": 0.5,
         "text": (
-            "A few small edits later, the CLI confirms the file is balanced. "
+            "Now it runs the command-line interface to verify the fix — "
+            "the same structural check, this time from a terminal."
+        ),
+    },
+    {
+        "id": "done",
+        "after_event": "balanced_proven",
+        "fallback_event": "demo_done",
+        "fallback_offset": -3.0,
+        "offset": 0.5,
+        "text": (
+            "The CLI confirms the file is balanced. "
             "No manual debugging — Copilot found and fixed every structural "
             "error in one pass."
         ),

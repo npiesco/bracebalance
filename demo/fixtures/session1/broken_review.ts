@@ -101,6 +101,6 @@ function brokenProcessor(config: BrokenConfig): void {
                     }
                 };  // <-- missing } for outer "stage2" object
             }
-        }
+        },
     ];
 }

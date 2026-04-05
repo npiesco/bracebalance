@@ -14,7 +14,7 @@ OUTPUT_DIR = ROOT_DIR / "demo" / "output"
 TIMINGS_PATH = OUTPUT_DIR / "timings.json"
 RECORDING_START_FILE = OUTPUT_DIR / "recording_started_at"
 SAMPLE_RATE = 16000
-END_BUFFER_SECONDS = 8.0
+END_BUFFER_SECONDS = 15.0
 
 
 def load_env() -> None:
