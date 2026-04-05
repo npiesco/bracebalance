@@ -103,7 +103,6 @@ def main() -> int:
             "-lc",
             (
                 "DEMO_WINDOW_ID=$(xdotool getactivewindow) "
-                "DEMO_RECORDING=1 "
                 "uv run python ./demo/scripts/start_copilot_session.py 2>/tmp/controller-stderr.log; "
                 f"echo $? > {exit_code_file}; "
                 "sleep 2"
