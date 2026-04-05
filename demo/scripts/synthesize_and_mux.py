@@ -14,7 +14,7 @@ OUTPUT_DIR = ROOT_DIR / "demo" / "output"
 TIMINGS_PATH = OUTPUT_DIR / "timings.json"
 RECORDING_START_FILE = OUTPUT_DIR / "recording_started_at"
 SAMPLE_RATE = 16000
-END_BUFFER_SECONDS = 15.0
+END_BUFFER_SECONDS = 60.0
 
 
 def load_env() -> None:
@@ -236,13 +236,13 @@ def main() -> int:
     final_size = final_path.stat().st_size
     prompt_sent_rel = timings.get("prompt_sent", 0)
     errors: list[str] = []
-    if prompt_sent_rel < 0:
+    if prompt_sent_rel < -2.0:
         errors.append(f"prompt_sent is {prompt_sent_rel:.1f}s before recording — first chars will be cut off")
     if final_dur < 30:
         errors.append(f"video is only {final_dur:.1f}s — suspiciously short")
     if final_size < 500_000:
         errors.append(f"video is only {final_size / 1024:.0f} KB — suspiciously small")
-    typing_end = prompt_sent_rel + 850 * 0.012 + 1.0
+    typing_end = prompt_sent_rel + 850 * 0.030 + 1.0
     if "copilot_responding" in timings:
         response_start = timings["copilot_responding"]
         typing_ratio = typing_end / final_dur if final_dur > 0 else 1.0

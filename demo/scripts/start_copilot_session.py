@@ -24,8 +24,7 @@ PROMPT = (
     "Do not ask follow-up questions; make reasonable assumptions and keep going. "
     "Do not inspect comments, headers, strings, template literals, angle brackets, or secondary hypotheses. "
     "If both the MCP tool and the CLI say the file is balanced for () {} [], treat the task as complete immediately. "
-    "If Copilot presents approval or confirmation prompts, choose the option that allows continuing safely in this trusted repo. "
-    f"When the work is complete, print exactly {COMPLETION_MARKER} on its own line, then print a short final summary."
+    "If Copilot presents approval or confirmation prompts, choose the option that allows continuing safely in this trusted repo."
 )
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 COMPLETION_LINE_RE = re.compile(r"(?m)^\s*(?:DEMO_DONE|" + re.escape(COMPLETION_MARKER) + r")\s*$")
@@ -100,7 +99,7 @@ def type_text(window_id: str, text: str) -> None:
         stderr=subprocess.DEVNULL,
     )
     subprocess.run(
-        ["xdotool", "type", "--clearmodifiers", "--delay", "12", text],
+        ["xdotool", "type", "--clearmodifiers", "--delay", "30", text],
         check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -155,6 +154,10 @@ def main() -> int:
     reset_fixtures()
     ensure_folder_trust()
 
+    # Clean stale output artifacts so timing offsets are fresh
+    for stale in ("recording_started_at", "timings.json"):
+        (ROOT_DIR / "demo" / "output" / stale).unlink(missing_ok=True)
+
     if os.environ.get("DEMO_VISIBLE_MODE") == "1":
         visible_prelude()
 
@@ -199,10 +202,14 @@ def main() -> int:
     trust_answer_pos = 0
     generic_confirm_sent = 0
     prompt_sent = False
+    prompt_echo_end_pos = 0
     copilot_responded = False
     response_start_pos = 0
     finish_nudge_sent = False
     nudge_sent = 0
+    nudge_echo_pos = 0
+    mcp_ever_seen = False
+    cli_balanced_ever = False
     demo_done_seen_at: float | None = None
     exit_sent = False
     recent = ""
@@ -242,6 +249,8 @@ def main() -> int:
                         recent = recent[trim:]
                         trust_answer_pos = max(0, trust_answer_pos - trim)
                         response_start_pos = max(0, response_start_pos - trim)
+                        prompt_echo_end_pos = max(0, prompt_echo_end_pos - trim)
+                        nudge_echo_pos = max(0, nudge_echo_pos - trim)
 
             recent_for_ready = recent[trust_answer_pos:]
             ready_for_prompt = (
@@ -264,8 +273,19 @@ def main() -> int:
                 type_text(window_id, PROMPT)
                 send_keys(window_id, "Return")
                 prompt_sent = True
-                last_output_at = now
-                print("\n[controller] sent initial task prompt", file=sys.stderr)
+                # type_text blocks until xdotool finishes. Read the transcript
+                # now so prompt_echo_end_pos reflects the actual echo size
+                # (TUI redraws every line per keystroke → transcript >> len(PROMPT)).
+                time.sleep(1.0)
+                if log_path.exists():
+                    flushed = log_path.read_text(errors="ignore")
+                    flushed_stripped = strip_ansi(flushed.replace("\r", ""))
+                    # Sync recent to current transcript state
+                    recent = flushed_stripped
+                    last_seen_len = len(flushed)
+                prompt_echo_end_pos = len(recent) + 2000
+                last_output_at = time.time()
+                print(f"\n[controller] sent initial task prompt (echo_end_pos={prompt_echo_end_pos})", file=sys.stderr)
                 time.sleep(0.8)
                 continue
 
@@ -299,7 +319,7 @@ def main() -> int:
                                     "Worked for", "─ Worked for")
                 if any(m in recent for m in response_markers):
                     copilot_responded = True
-                    response_start_pos = len(recent)
+                    response_start_pos = max(len(recent), prompt_echo_end_pos)
                     record_timing("copilot_responding")
                     print("\n[controller] Copilot started responding", file=sys.stderr)
 
@@ -307,57 +327,50 @@ def main() -> int:
                 time.sleep(0.2)
                 continue
 
-            response_text = recent[response_start_pos:]
-            response_lower = response_text.lower()
+            safe_pos = max(response_start_pos, nudge_echo_pos)
+            response_text = recent[safe_pos:]
 
-            has_tool_results = (
-                "(MCP: bracebalance)" in response_text
-                or "UNCLOSED" in response_text
-                or "[OK] BALANCED" in response_text
-                or "lines read" in response_text
-            )
-
+            # Only match strings exclusive to Copilot tool output — NEVER in typed prompt.
+            # Use sticky flags: once seen anywhere in the response, stays true even
+            # after the 20K buffer trim evicts the original text.
             if "(MCP: bracebalance)" in response_text:
+                mcp_ever_seen = True
+            if "UNCLOSED" in response_text:
+                cli_balanced_ever = False  # unclosed means not yet balanced
+            if "[OK] BALANCED" in response_text:
+                cli_balanced_ever = True
+
+            if mcp_ever_seen:
                 record_timing("mcp_tool_seen")
             if "UNCLOSED" in response_text or "[OK] BALANCED" in response_text:
                 record_timing("cli_output_seen")
-            if "Edited" in response_text or "+1 -1" in response_text or "+2 -1" in response_text:
+            if "Edited" in response_text and mcp_ever_seen:
                 record_timing("edit_seen")
 
-            balanced_proven = (
-                "[OK] BALANCED" in response_text
-                or ("balanced" in response_lower and has_tool_results
-                    and ("no fix" in response_lower or "fixed" in response_lower
-                         or "task complete" in response_lower))
-            )
+            balanced_proven = cli_balanced_ever and mcp_ever_seen
             if balanced_proven:
                 record_timing("balanced_proven")
-            if balanced_proven and not finish_nudge_sent and demo_done_seen_at is None:
+
+            # Completion = both MCP and CLI confirm balanced. No marker needed.
+            if balanced_proven and demo_done_seen_at is None:
+                demo_done_seen_at = now
+                record_timing("demo_done")
+                print("\n[controller] detected completion (balanced proven by both tools)", file=sys.stderr)
+
+            # After completion, send a finish nudge and give Copilot time to summarize
+            if demo_done_seen_at is not None and not finish_nudge_sent:
                 type_text(
                     window_id,
-                    f"Both checks are complete. Stop here. Print exactly {COMPLETION_MARKER} on its own line, then a short final summary, then exit.",
+                    "Both checks are complete. Stop here. Print a short final summary, then exit.",
                 )
                 send_keys(window_id, "Return")
                 finish_nudge_sent = True
-                last_output_at = now
-                print("\n[controller] sent finish nudge after balanced proof", file=sys.stderr)
+                last_output_at = time.time()
+                print("\n[controller] sent finish nudge", file=sys.stderr)
                 time.sleep(0.8)
                 continue
 
-            semantic_completion = (
-                has_tool_results
-                and ("No fix needed" in response_text or "no fix required" in response_lower
-                     or "no fix was needed" in response_lower or "task complete" in response_lower
-                     or "fixed" in response_lower)
-                and "balanced" in response_lower
-            )
-            copilot_said_marker = f"\u25cf {COMPLETION_MARKER}" in response_text
-            if has_tool_results and (copilot_said_marker or semantic_completion) and demo_done_seen_at is None:
-                demo_done_seen_at = now
-                record_timing("demo_done")
-                print("\n[controller] detected completion", file=sys.stderr)
-
-            if demo_done_seen_at is not None and not exit_sent and now - demo_done_seen_at >= 1.0:
+            if demo_done_seen_at is not None and not exit_sent and now - demo_done_seen_at >= 60.0:
                 send_keys(window_id, "ctrl+c")
                 time.sleep(0.5)
                 send_keys(window_id, "ctrl+d")
@@ -371,11 +384,11 @@ def main() -> int:
             if demo_done_seen_at is None and now - last_output_at >= idle_nudge_seconds and nudge_sent < 1:
                 type_text(
                     window_id,
-                    f"Continue with reasonable assumptions, stop further investigation, print exactly {COMPLETION_MARKER} on its own line, then a short final summary, then exit.",
+                    "Continue with reasonable assumptions, stop further investigation, print a short final summary, then exit.",
                 )
                 send_keys(window_id, "Return")
                 nudge_sent += 1
-                last_output_at = now
+                last_output_at = time.time()
                 print("\n[controller] sent idle nudge", file=sys.stderr)
 
             time.sleep(0.2)
