@@ -209,27 +209,19 @@ impl BraceBalanceMcp {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for BraceBalanceMcp {
     fn get_info(&self) -> rmcp::model::InitializeResult {
-        rmcp::model::InitializeResult {
-            server_info: rmcp::model::Implementation {
-                name: "bracebalance".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                description: Some(
-                    "Check balanced brace/bracket pairs in source text, files, or directories."
-                        .to_string(),
-                ),
-                title: None,
-                icons: None,
-                website_url: None,
-            },
-            instructions: Some(
-                "Check balanced brace/bracket pairs in source text, files, or directories."
-                    .to_string(),
-            ),
-            capabilities: rmcp::model::ServerCapabilities::builder()
+        let description =
+            "Check balanced brace/bracket pairs in source text, files, or directories.";
+
+        rmcp::model::InitializeResult::new(
+            rmcp::model::ServerCapabilities::builder()
                 .enable_tools()
                 .build(),
-            ..Default::default()
-        }
+        )
+        .with_server_info(
+            rmcp::model::Implementation::new("bracebalance", env!("CARGO_PKG_VERSION"))
+                .with_description(description),
+        )
+        .with_instructions(description)
     }
 }
 
@@ -335,7 +327,7 @@ async fn main() -> anyhow::Result<()> {
     // Without it the server exits instantly and the MCP client sees
     // "Connection state: Stopped".
     //
-    // Correct (rmcp 0.16):
+    // Correct:
     //   let service = server.serve(transport).await?;
     //   service.waiting().await?;
     //
