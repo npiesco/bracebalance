@@ -13,6 +13,10 @@
 
 # BraceBalance
 
+[![BraceBalance Demo](https://img.youtube.com/vi/-vLpscWHpE4/hqdefault.jpg)](https://youtu.be/-vLpscWHpE4)
+
+Click the thumbnail above to watch the demo video on YouTube.
+
 BraceBalance is a Rust-based delimiter balance checker for source code and code-like files. It strips comments and string literals before scanning, continues through malformed nesting with skip-forward recovery, and produces diagnostics that are useful in editors, CI, and MCP-driven agent workflows.
 
 The core value is straightforward: delimiter checks are only useful when they ignore syntax noise and still produce a readable report after the first structural mistake. BraceBalance is built for that case.
@@ -104,7 +108,7 @@ graph TB
     end
 
     subgraph "Shared Library"
-        PAIRS["Pair Resolver<br/>resolve_pairs<br/>default / custom / --all"]
+        PAIRS["Pair Resolver<br/>resolve_pairs<br/>default · custom · all"]
         COLLECT["Path Collector<br/>collect_files<br/>supported extensions only"]
 
         subgraph "Checking Pipeline"
