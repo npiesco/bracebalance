@@ -3,7 +3,7 @@
   <br><br>
   <p><strong>Rust + CLI + MCP + source-aware sanitization</strong></p>
 
-  [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://opensource.org/licenses/MIT)
+  [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
   [![Rust Edition](https://img.shields.io/badge/rust-2024%20edition-orange?style=flat-square)](Cargo.toml)
   [![MCP](https://img.shields.io/badge/MCP-stdio%20server-6f42c1?style=flat-square)](src/bin/bracebalance-mcp-server.rs)
   [![Diagnostics](https://img.shields.io/badge/diagnostics-recovery--oriented-0a7ea4?style=flat-square)](#how-it-works)
@@ -350,7 +350,7 @@ This recovery behavior is the reason BraceBalance can keep scanning and still pr
 
 ## License
 
-MIT.
+AGPL-3.0. See [LICENSE](LICENSE).
 
 ## Contributing
 
