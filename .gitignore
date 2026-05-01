@@ -12,3 +12,6 @@ cosynt.db.tantivy
 data/
 demo/output/
 __pycache__/
+
+graph.cache/
+graph.db
